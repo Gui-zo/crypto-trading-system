@@ -12,8 +12,14 @@ command reference, what lands in which table, and — most importantly — a num
 **Known limitations** list that exists to stop you drawing wrong conclusions.
 Do not skip that section.
 
-Decision history is in [`docs/adr/`](docs/adr/) (14 ADRs). The three most
+Decision history is in [`docs/adr/`](docs/adr/) (16 ADRs). The four most
 load-bearing:
+
+- **[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md)** — the
+  live reconciliation, 2026-08-09. Seven findings that contradicted our
+  documented assumptions, including that **4-hourly funding is the majority** on
+  the venue and that `leverageBracket` is not a public endpoint. This is where
+  documentation met reality; read it before trusting any Binance specific.
 
 - **[ADR-0009](docs/adr/0009-liquidation-distance-invariant.md)** — the sibling
   repo's `max_loss = cost + fee` invariant is **false** here. A short perp has
@@ -23,8 +29,10 @@ load-bearing:
   promotion gates do not transfer. With five years of free archive you clear any
   count gate in an afternoon.
 - **[ADR-0003](docs/adr/0003-binance-schemas-synthetic-until-recorded.md)** —
-  every Binance specific in this repo is from documentation, not a recorded
-  response. Treat all of them as unverified.
+  the discipline that made ADR-0015 cheap: tolerant parsing, raw retention before
+  parsing, single points of correction. Anything *not* in
+  `tests/fixtures/binance/recorded/` is still unverified — signing, WebSocket
+  `markPrice`/`kline` frames, and all rate-limit failure behaviour.
 
 Update `docs/STATUS.md` and the relevant README section whenever something lands,
 and write an ADR for any material decision.
@@ -49,13 +57,16 @@ a price the risk engine approved.
 - Postgres + Redis via `docker compose up -d`. **Ports are 5433/6380**, offset
   from the sibling `automated-trading-system` stack (5432/6379) so both run side
   by side. User/db `crypto`.
+- Binance market data needs **no API key**. `binance-status` and
+  `binance-snapshot` work against production read-only out of the box; set
+  `BINANCE_ENV=production` to point at it.
 - Cron drives collection via `scripts/cron-run.sh`; logs in `data/logs/`.
   Nothing is scheduled yet — there are no producers.
 
 ## Verification (all four must pass before committing)
 
 ```bash
-uv run pytest -q          # 272 tests
+uv run pytest -q          # 425 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -83,6 +94,27 @@ scope the query to a row you created. This bit the sibling repo repeatedly.
   closes it after, so a crash leaves RUNNING residue for the watchdog.
 - All timestamps are timezone-aware **UTC**. Funding settles on UTC boundaries.
 - **Do not read the user's `.env` or any secret file.**
+
+## Working on the venue adapter
+
+- **Never assume a funding interval.** It is per symbol, from `fundingInfo` —
+  442 of 742 symbols were 4-hourly on 2026-08-09, 296 were 8-hourly, 4 hourly
+  (ADR-0016). There is no "the funding interval" in this codebase and there
+  should never be. Use `max_funding_age_for(interval_hours)` for freshness.
+- **The universe is filtered**: `TRADING` + `PERPETUAL` + USDT quote. 153 of 854
+  symbols are `TRADIFI_PERPETUAL` — tokenised equities and metals (AAPLUSDT,
+  TSLAUSDT, XAUUSDT) — and nothing but `contractType` distinguishes them.
+  Unknown status or contract type → excluded, fail closed.
+- **Correct wire bugs in one place.** URLs in `endpoints.py`, signing in
+  `auth.py`, status/code interpretation in `errors.py`, field names in
+  `schemas.py` + `mapping.py`. That is what makes a first-contact fix small.
+- **Raw bytes are retained before parsing**, so a payload that breaks the parser
+  is the one you still have. Keys are environment-scoped.
+- Contract tests parse the **recorded** payloads in
+  `tests/fixtures/binance/recorded/`. If you change a schema and they fail, the
+  venue is right and you are wrong. Re-record with `binance-snapshot`.
+- **No order path exists in `venue_binance`, and none may be added.** There is a
+  test asserting the client exposes no method whose name suggests one.
 
 ## Checking current state
 

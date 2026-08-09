@@ -45,6 +45,7 @@ from config.settings import Settings, load_settings  # noqa: E402
 from db.engine import create_engine, create_session_factory  # noqa: E402
 from db.operational_health_repo import OperationalHealthRepository  # noqa: E402
 from db.safety_repo import SafetyControlRepository  # noqa: E402
+from domain.instrument import VenueEnvironment  # noqa: E402
 from domain.modes import TradingMode, is_live, permits_new_orders  # noqa: E402
 from domain.operational_health import OperationalJobStatus  # noqa: E402
 from domain.promotion import (  # noqa: E402
@@ -66,6 +67,11 @@ from domain.safety import (  # noqa: E402
     SafetyScope,
 )
 from observability.logging import configure_logging  # noqa: E402
+from storage.raw_store import create_raw_store  # noqa: E402
+from venue_binance.client import BinanceRestClient, create_http_client  # noqa: E402
+from venue_binance.endpoints import Market  # noqa: E402
+from venue_binance.errors import BinanceError  # noqa: E402
+from venue_binance.mapping import is_carry_candidate  # noqa: E402
 
 log = logging.getLogger("cli")
 
@@ -325,6 +331,109 @@ async def cmd_health_status(settings: Settings, args: argparse.Namespace) -> int
 
 
 # ---------------------------------------------------------------------------
+# binance-*
+# ---------------------------------------------------------------------------
+
+
+def _venue_environment(settings: Settings) -> VenueEnvironment:
+    return VenueEnvironment(settings.binance_env.value)
+
+
+async def cmd_binance_status(settings: Settings, args: argparse.Namespace) -> int:
+    """Connectivity, clock drift, and rate-limit budget. Read-only, no key needed.
+
+    Clock drift is reported because it is load-bearing twice over: a signed
+    request outside ``recvWindow`` is rejected outright, and funding settles on
+    UTC boundaries, so a drifting host mis-attributes settlements.
+    """
+    environment = _venue_environment(settings)
+    async with create_http_client() as http:
+        api = BinanceRestClient(environment=environment, http=http)
+        try:
+            drift_seconds, server_time = await api.clock_drift()
+            info = await api.exchange_info()
+            reachable = True
+            error: str | None = None
+        except BinanceError as exc:
+            drift_seconds, server_time, info = 0.0, None, None
+            reachable = False
+            error = str(exc)
+
+    tradeable = (
+        sum(1 for symbol in info.value.symbols if is_carry_candidate(symbol))
+        if info is not None
+        else 0
+    )
+    report = {
+        "environment": environment.value,
+        "reachable": reachable,
+        "error": error,
+        "server_time": server_time.isoformat() if server_time else None,
+        "clock_drift_seconds": round(drift_seconds, 3),
+        "weight_limit_per_minute": api.budget.limit,
+        "weight_used": api.budget.snapshot().used,
+        "symbols_total": len(info.value.symbols) if info is not None else 0,
+        "carry_candidates": tradeable,
+    }
+    if args.json:
+        _print(report, as_json=True)
+    else:
+        for key, value in report.items():
+            print(f"{key:26} {value}")
+        if abs(drift_seconds) > 1.0:
+            print("\nWARNING: clock drift above 1s — funding settles on UTC boundaries")
+    return 0 if reachable else 1
+
+
+#: Public, unauthenticated endpoints the snapshot records. Deliberately a fixed
+#: list rather than a free-form argument: this command exists to refresh the
+#: fixture corpus reproducibly, and an operator-supplied endpoint would make the
+#: recording unreproducible.
+_SNAPSHOT_SYMBOL = "BTCUSDT"
+
+
+async def cmd_binance_snapshot(settings: Settings, args: argparse.Namespace) -> int:
+    """Fetch public market data and retain every raw byte (ADR-0003).
+
+    This is how the recorded corpus in `tests/fixtures/binance/recorded/` is
+    refreshed, and how a schema drift is detected: fetch, retain, diff.
+    """
+    environment = _venue_environment(settings)
+    settings_for_store = settings
+    if args.out:
+        settings_for_store = settings.model_copy(update={"raw_store_local_dir": args.out})
+    store = create_raw_store(settings_for_store)
+
+    async def body(session: AsyncSession) -> int:
+        async with create_http_client() as http:
+            api = BinanceRestClient(environment=environment, http=http, raw_store=store)
+            records = []
+            for label, coroutine in (
+                ("exchangeInfo", api.exchange_info()),
+                ("fundingInfo", api.funding_info()),
+                ("premiumIndex", api.mark_price(_SNAPSHOT_SYMBOL)),
+                ("fundingRate", api.funding_history(_SNAPSHOT_SYMBOL, limit=10)),
+                ("bookTicker", api.book_ticker(_SNAPSHOT_SYMBOL, Market.USDM)),
+                ("klines", api.klines(_SNAPSHOT_SYMBOL, interval="8h", limit=3)),
+            ):
+                response = await coroutine
+                if response.raw is not None:
+                    records.append((label, response.raw))
+                    print(f"{label:16} {response.raw.size:>8} bytes  {response.raw.key}")
+            weight = api.budget.snapshot()
+            print(f"\nweight used {weight.used}/{weight.limit} ({weight.utilisation:.0%})")
+            log.info(
+                "binance snapshot complete",
+                extra={"environment": environment.value, "objects": len(records)},
+            )
+        return 0
+
+    return await _run_audited(
+        settings, job_name="binance-snapshot", argv=sys.argv[1:], body=body
+    )
+
+
+# ---------------------------------------------------------------------------
 # promotion-status
 # ---------------------------------------------------------------------------
 
@@ -508,6 +617,18 @@ def build_parser() -> argparse.ArgumentParser:
     health_status.add_argument("--json", action="store_true")
     health_status.add_argument("--limit", type=int, default=20)
     health_status.set_defaults(func=cmd_health_status)
+
+    binance_status = sub.add_parser(
+        "binance-status", help="venue connectivity, clock drift, rate-limit budget"
+    )
+    binance_status.add_argument("--json", action="store_true")
+    binance_status.set_defaults(func=cmd_binance_status)
+
+    snapshot = sub.add_parser(
+        "binance-snapshot", help="fetch public market data and retain every raw byte"
+    )
+    snapshot.add_argument("--out", help="raw-store directory override")
+    snapshot.set_defaults(func=cmd_binance_snapshot)
 
     promotion = sub.add_parser("promotion-status", help="promotion gates and binding constraint")
     promotion.add_argument("--json", action="store_true")

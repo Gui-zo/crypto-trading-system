@@ -99,3 +99,9 @@ def configure_logging(
         root.removeHandler(existing)
     root.addHandler(handler)
     root.setLevel(level.upper())
+
+    # httpx logs every request at INFO, including the full URL. That is both
+    # noisy and the exact shape of line that leaks a signed query string, so it
+    # is raised to WARNING. Redaction still applies if it ever does emit one.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)

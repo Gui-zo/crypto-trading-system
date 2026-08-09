@@ -45,10 +45,20 @@ from domain.modes import TradingMode, permits_new_orders
 # price at the moment the decision is made.
 DEFAULT_MAX_MARK_PRICE_AGE = timedelta(seconds=60)
 DEFAULT_MAX_ACCOUNT_STATE_AGE = timedelta(seconds=60)
-# One funding interval. Binance's usual USDS-M cadence is 8h, but some symbols
-# settle every 4h — the interval is read per symbol from the venue and passed in,
-# never assumed (ADR-0003).
-DEFAULT_MAX_FUNDING_AGE = timedelta(hours=8)
+
+#: One funding interval — of the **shortest** cadence the venue runs, not the
+#: most familiar one.
+#:
+#: This default was 8 hours until the 2026-08-09 recording showed that 8-hourly
+#: funding is the minority: 442 of 742 symbols settle every 4 hours and four
+#: settle hourly (ADR-0016). An 8-hour tolerance on a 4-hourly symbol accepts a
+#: funding rate a *whole interval* out of date, which is exactly the silent
+#: mis-valuation this gate exists to prevent.
+#:
+#: So the default is the tightest interval observed. A caller that forgets to
+#: pass the symbol's real schedule gets refused, not over-permitted — use
+#: :func:`max_funding_age_for` with the venue-reported interval.
+DEFAULT_MAX_FUNDING_AGE = timedelta(hours=1)
 
 DEFAULT_CLOCK_DRIFT_TOLERANCE = timedelta(minutes=5)
 
@@ -195,6 +205,24 @@ class SafetyEvaluation:
             for check in self.checks
             if check.status is SafetyCheckStatus.BLOCK
         )
+
+
+def max_funding_age_for(
+    interval_hours: int, *, slack: timedelta = timedelta(minutes=5)
+) -> timedelta:
+    """Freshness tolerance for a funding rate on a symbol with this cadence.
+
+    One interval plus a small slack. The slack exists because settlement is not
+    punctual — the 2026-08-09 recording contains a payment stamped five
+    milliseconds past the boundary — and a tolerance of exactly one interval
+    would reject a rate that had only just been superseded.
+
+    Pass the interval the venue reported for *that symbol* (`fundingInfo`), never
+    a constant (ADR-0016).
+    """
+    if interval_hours <= 0:
+        raise ValueError("funding interval must be positive")
+    return timedelta(hours=interval_hours) + slack
 
 
 def normalize_scope_key(scope: SafetyScope, key: str) -> str:

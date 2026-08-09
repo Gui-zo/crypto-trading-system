@@ -1,8 +1,8 @@
 # crypto-trading-system
 
 An autonomous crypto trading platform. First strategy domain: **delta-neutral
-funding-rate carry on Binance USDⓈ-M perpetual futures**, decided on the 8-hour
-funding cadence.
+funding-rate carry on Binance USDⓈ-M perpetual futures**, decided on each
+symbol's own funding cadence.
 
 Guiding principle: **safety before autonomy.** Models may *propose*; a
 deterministic risk engine, separate from any model, *decides*. Promotion toward
@@ -10,8 +10,9 @@ live capital is stepwise and gated by explicit, testable criteria. When unsure,
 **fail closed** — reject on missing, stale, or ambiguous input rather than
 guessing.
 
-> **Status: Phase 0 complete.** The governance surface is built and tested; there
-> is no Binance client, no market data, no model, no risk engine, and no code path
+> **Status: Phases 0–1 complete.** The governance surface and a **read-only
+> Binance adapter, live-verified against production**, are built and tested.
+> There is no market-data persistence, no model, no risk engine, and no code path
 > that can submit an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
@@ -41,6 +42,12 @@ equivalent spot, and get paid to provide the leverage that leveraged longs
 demand. No directional prediction anywhere. The model layer forecasts *funding
 persistence*, which is a genuine probabilistic problem, so the sibling's entire
 calibration apparatus ports unchanged.
+
+Funding settles on a fixed schedule that is **per symbol**: measured on the live
+venue, 442 of 742 symbols settle every 4 hours, 296 every 8, and 4 every hour
+([ADR-0016](docs/adr/0016-instrument-universe-and-funding-cadence.md)). BTC and
+ETH are 8-hourly, which is why an 8-hour assumption looks right until the
+universe widens.
 
 It is a crowded, well-known trade. That is fine — the goal is a *defensible*
 edge, not an undiscovered one. Four falsifiable kill criteria are recorded in
@@ -101,6 +108,31 @@ afternoon. Gates are therefore **prospective wall-clock time on unseen data**
 (≥ 90 consecutive paper days), and a backtest contributes zero days. See
 [ADR-0012](docs/adr/0012-prospective-only-promotion-gates.md).
 
+## What the live venue said
+
+Phase 1 reconciled every documented assumption against real responses from
+`fapi.binance.com` — the follow-up ADR-0003 made mandatory. Seven contradicted
+what we had written down; all are recorded in
+[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md) with the
+payloads committed under `tests/fixtures/binance/recorded/`. The three that
+changed the design:
+
+- **4-hourly funding is the majority**, not the exception. The founding spec had
+  this backwards. `DEFAULT_MAX_FUNDING_AGE` dropped from 8 h to 1 h so a caller
+  who forgets a symbol's real cadence is refused rather than over-permitted.
+- **`leverageBracket` is not a public endpoint** (HTTP 401). Maintenance-margin
+  tiers feed the liquidation-distance invariant, so **Phase 2 is blocked on a
+  read-only API key** — the project's first hard external dependency.
+- **Testnet and production prices are *plausibly similar*** — 65100.70 against
+  65102.39 at the same instant, not the "orders of magnitude" ADR-0010 originally
+  claimed. That correction strengthens the case for environment scoping: an
+  obviously-wrong price gets caught, a plausible one never does.
+
+Also: 153 of 854 symbols are tokenised equities and metals (AAPLUSDT, TSLAUSDT,
+XAUUSDT) that are indistinguishable from crypto perpetuals by shape alone, and
+one recorded settlement landed 5 ms past its interval boundary — enough to make
+an equality join silently drop rows from the primary evidence series.
+
 ## Quickstart
 
 ```bash
@@ -110,6 +142,9 @@ uv sync                       # install dependencies
 uv run alembic upgrade head   # create the schema
 
 uv run python apps/cli/main.py dashboard
+
+# Binance market data needs no API key:
+BINANCE_ENV=production uv run python apps/cli/main.py binance-status
 ```
 
 Ports are offset from the sibling project's (5432/6379) so both stacks run side
@@ -119,7 +154,7 @@ v1 and will break in confusing ways.
 ### Verification — all four must pass before any commit
 
 ```bash
-uv run pytest -q          # 272 tests
+uv run pytest -q          # 425 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -135,6 +170,13 @@ packages/domain/            Pure logic. No framework, DB, or venue imports.
   promotion.py              Prospective gates: accrual, wall-clock, ceiling
   calibration.py            Brier / ECE / reliability / PIT / CRPS / skill
   precision.py              Decimal discipline and symbol-filter quantization
+  instrument.py             Symbol identity, venue scope, funding schedule
+  market_data.py            Mark price, funding, book ticker, kline observations
+packages/venue_binance/     Read-only venue adapter; no order path exists
+  endpoints/auth/errors     One place each to correct routing, signing, statuses
+  schemas.py + mapping.py   Tolerant wire models; the only place fields matter
+  client.py                 REST; retains raw bytes before parsing
+  ws_client.py              Combined streams, reconnect, sequence-gap detection
 packages/config/            Settings + SecretProvider (env and file-backed)
 packages/storage/           Immutable content-addressed raw-payload store
 packages/observability/     JSON logging with credential redaction
@@ -143,8 +185,9 @@ apps/cli/main.py            Every command; owns the transaction
 ```
 
 Commands: `dashboard`, `status`, `safety-status`, `safety-halt`, `safety-clear`,
-`health-status`, `health-check`, `promotion-status`. Full table and the planned
-commands in [`docs/STATUS.md`](docs/STATUS.md).
+`health-status`, `health-check`, `promotion-status`, `binance-status`,
+`binance-snapshot`. Full table and the planned commands in
+[`docs/STATUS.md`](docs/STATUS.md).
 
 ## Conventions that apply to every future change
 
@@ -161,7 +204,11 @@ commands in [`docs/STATUS.md`](docs/STATUS.md).
   leaves RUNNING residue for the watchdog to find.
 - All timestamps timezone-aware **UTC**; funding settles on UTC boundaries.
 - Every Binance specific is unverified until diffed against a recorded response.
+  Raw bytes are retained *before* parsing, so the payload that breaks the parser
+  is the one you still have.
   ([ADR-0003](docs/adr/0003-binance-schemas-synthetic-until-recorded.md))
+- **Never assume a funding interval** — it is per symbol, read from the venue.
+  ([ADR-0016](docs/adr/0016-instrument-universe-and-funding-cadence.md))
 
 ## Documentation map
 
@@ -169,7 +216,8 @@ commands in [`docs/STATUS.md`](docs/STATUS.md).
 |---|---|
 | [`docs/STATUS.md`](docs/STATUS.md) | **Start here.** Current state, phases, commands, known limitations, backlog |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement for AI sessions picking this up cold |
-| [`docs/adr/`](docs/adr/) | 14 ADRs — why the system is shaped this way |
+| [`docs/adr/`](docs/adr/) | 16 ADRs — why the system is shaped this way. **ADR-0015** is the load-bearing one |
+| [`tests/fixtures/binance/`](tests/fixtures/binance/) | Recorded venue responses, and an honest list of what is still unverified |
 | [`docs/founding-readme.md`](docs/founding-readme.md) | The original specification, archived verbatim |
 
 ## Operational notes

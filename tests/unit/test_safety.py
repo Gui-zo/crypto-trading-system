@@ -16,6 +16,7 @@ import pytest
 
 from domain.modes import TradingMode
 from domain.safety import (
+    DEFAULT_MAX_FUNDING_AGE,
     ReconciliationStatus,
     SafetyCheckStatus,
     SafetyContext,
@@ -26,6 +27,7 @@ from domain.safety import (
     SafetyScope,
     SafetyScopeRef,
     evaluate_safety,
+    max_funding_age_for,
     normalize_scope_key,
 )
 
@@ -165,6 +167,51 @@ def test_small_forward_drift_is_tolerated() -> None:
     )
     assert status_of(evaluation, "MARK_PRICE_CLOCK_DRIFT") is SafetyCheckStatus.PASS
     assert status_of(evaluation, "MARK_PRICE_CURRENT") is SafetyCheckStatus.PASS
+
+
+def test_the_default_funding_tolerance_suits_the_tightest_cadence() -> None:
+    """Regression guard for the 2026-08-09 finding (ADR-0016).
+
+    The default was 8 hours, which accepts a *whole interval* of staleness on the
+    4-hourly majority of the venue. A caller who forgets to pass the symbol's own
+    schedule must be refused, not over-permitted.
+    """
+    assert timedelta(hours=1) == DEFAULT_MAX_FUNDING_AGE
+    evaluation = evaluate_safety(healthy_context(funding_recorded_at=NOW - timedelta(hours=2)))
+    assert status_of(evaluation, "FUNDING_CURRENT") is SafetyCheckStatus.BLOCK
+
+
+@pytest.mark.parametrize(("hours", "expected_hours"), [(1, 1), (4, 4), (8, 8)])
+def test_the_funding_tolerance_derives_from_the_symbols_own_interval(
+    hours: int, expected_hours: int
+) -> None:
+    tolerance = max_funding_age_for(hours)
+    assert tolerance > timedelta(hours=expected_hours)
+    assert tolerance < timedelta(hours=expected_hours + 1)
+
+
+def test_the_funding_tolerance_allows_slack_for_late_settlement() -> None:
+    """Settlement is not punctual — one recorded payment was 5 ms late."""
+    assert max_funding_age_for(8) == timedelta(hours=8, minutes=5)
+
+
+def test_a_nonpositive_funding_interval_is_refused() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        max_funding_age_for(0)
+
+
+def test_a_four_hourly_symbol_accepts_its_own_interval_but_not_double() -> None:
+    context = healthy_context(
+        funding_recorded_at=NOW - timedelta(hours=3),
+        max_funding_age=max_funding_age_for(4),
+    )
+    assert status_of(evaluate_safety(context), "FUNDING_CURRENT") is SafetyCheckStatus.PASS
+
+    stale = healthy_context(
+        funding_recorded_at=NOW - timedelta(hours=8),
+        max_funding_age=max_funding_age_for(4),
+    )
+    assert status_of(evaluate_safety(stale), "FUNDING_CURRENT") is SafetyCheckStatus.BLOCK
 
 
 def test_missing_provider_lineage_blocks() -> None:
