@@ -1,0 +1,43 @@
+# Local development infrastructure. Intentionally minimal — Postgres and Redis
+# only. Cloud infrastructure is deferred until we need 24/7 paper/shadow runtime
+# (see docs/adr/0002). Application services run on the host during early phases.
+#
+# Ports default one above the sibling `automated-trading-system` project's so both
+# stacks can run side by side on this machine without colliding.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-crypto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
+      POSTGRES_DB: ${POSTGRES_DB:-crypto}
+      # Funding settles on UTC boundaries; the database must agree (ADR-0005).
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crypto}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:

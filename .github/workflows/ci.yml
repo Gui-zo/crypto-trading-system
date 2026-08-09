@@ -1,0 +1,68 @@
+# The same four commands the repo requires before any local commit. Keeping CI
+# and the local checklist identical means a green CI is meaningful and a red one
+# is reproducible with one command.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crypto
+          POSTGRES_PASSWORD: crypto
+          POSTGRES_DB: crypto
+          TZ: UTC
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U crypto"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Funding settles on UTC boundaries; the runner must agree (ADR-0005).
+      TZ: UTC
+      DATABASE_URL: postgresql+psycopg://crypto:crypto@localhost:5433/crypto
+      BINANCE_ENV: testnet
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Types
+        run: uv run mypy .
+
+      # Catches a model changed without a migration — the drift that turns into a
+      # production schema mismatch weeks later.
+      - name: Migration drift
+        run: uv run alembic check
