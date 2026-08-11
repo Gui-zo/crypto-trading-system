@@ -1,4 +1,4 @@
-"""ORM models for the Phase-0 audit spine.
+"""ORM models for the append-only audit spine and immutable venue artifacts.
 
 Only the tables the ported safety spine needs to be *durable* are defined here:
 the append-only kill-switch event log, durable scheduler invocations, and
@@ -29,6 +29,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -159,4 +160,101 @@ class OperationalHealthAssessmentRecord(Base):
     policy_version: Mapped[str] = mapped_column(String(128))
     checks_json: Mapped[list[dict[str, object]]] = mapped_column(JSON)
     automatic_control_event_ids_json: Mapped[list[str]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InstrumentCatalogVersionRecord(Base):
+    """One immutable, content-addressed normalized instrument catalog."""
+
+    __tablename__ = "instrument_catalog_versions"
+    __table_args__ = (
+        UniqueConstraint("environment", "content_sha256"),
+        UniqueConstraint("id", "environment"),
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("length(content_sha256) = 64", name="valid_content_sha256"),
+        CheckConstraint("total_symbols > 0", name="positive_total_symbols"),
+        CheckConstraint("candidate_symbols > 0", name="positive_candidate_symbols"),
+        CheckConstraint("instrument_count > 0", name="positive_instrument_count"),
+        CheckConstraint("excluded_count >= 0", name="nonnegative_excluded_count"),
+        CheckConstraint(
+            "candidate_symbols = instrument_count + excluded_count",
+            name="complete_candidate_accounting",
+        ),
+        Index(
+            "ix_instrument_catalog_versions_environment_created",
+            "environment",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    total_symbols: Mapped[int] = mapped_column(Integer)
+    candidate_symbols: Mapped[int] = mapped_column(Integer)
+    instrument_count: Mapped[int] = mapped_column(Integer)
+    excluded_count: Mapped[int] = mapped_column(Integer)
+    catalog_json: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InstrumentCatalogObservationRecord(Base):
+    """One sync observation pointing at immutable raw and normalized evidence."""
+
+    __tablename__ = "instrument_catalog_observations"
+    __table_args__ = (
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        ForeignKeyConstraint(
+            ("catalog_version_id", "environment"),
+            (
+                "instrument_catalog_versions.id",
+                "instrument_catalog_versions.environment",
+            ),
+        ),
+        Index(
+            "ix_instrument_catalog_observations_environment_time",
+            "environment",
+            "observed_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    catalog_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_artifacts_json: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InstrumentCatalogReviewEventRecord(Base):
+    """Append-only human approval/rejection of one exact catalog hash."""
+
+    __tablename__ = "instrument_catalog_review_events"
+    __table_args__ = (
+        UniqueConstraint("sequence_number"),
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        ForeignKeyConstraint(
+            ("catalog_version_id", "environment"),
+            (
+                "instrument_catalog_versions.id",
+                "instrument_catalog_versions.environment",
+            ),
+        ),
+        CheckConstraint("action IN ('APPROVE', 'REJECT')", name="valid_action"),
+        CheckConstraint("length(actor) > 0", name="nonempty_actor"),
+        CheckConstraint("length(reason) > 0", name="nonempty_reason"),
+        Index(
+            "ix_instrument_catalog_review_events_version_sequence",
+            "catalog_version_id",
+            "sequence_number",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    sequence_number: Mapped[int] = mapped_column(BigInteger, Identity())
+    environment: Mapped[str] = mapped_column(String(32))
+    catalog_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    action: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

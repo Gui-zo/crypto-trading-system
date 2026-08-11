@@ -16,8 +16,9 @@ Retention happens before parsing on purpose. A payload that fails to parse is
 precisely the payload worth keeping, and a client that stores only what it
 understood would discard exactly the evidence needed to fix itself.
 
-There is **no order path here and none may be added.** The client exposes market
-data only; it does not even hold a signer.
+There is **no order path here and none may be added.** The only authenticated
+read is the account-specific maintenance-margin schedule needed by the
+liquidation-distance invariant; the signer cannot submit or mutate anything.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -34,6 +36,7 @@ from domain.instrument import InstrumentRef, VenueEnvironment, VenueScope
 from domain.market_data import BookTicker, FundingRateObservation, Kline, MarkPriceSnapshot
 from storage.raw_store import RawObjectRef, RawStore
 from venue_binance import mapping
+from venue_binance.auth import BinanceSigner
 from venue_binance.endpoints import (
     FALLBACK_WEIGHT_LIMIT_PER_MINUTE,
     VENUE_CODE,
@@ -43,6 +46,7 @@ from venue_binance.endpoints import (
 )
 from venue_binance.errors import (
     BinanceAPIError,
+    BinanceAuthenticationError,
     BinanceRateLimitError,
     BinanceTransportError,
 )
@@ -52,6 +56,7 @@ from venue_binance.schemas import (
     ExchangeInfoWire,
     FundingInfoWire,
     FundingRateWire,
+    LeverageBracketWire,
     PremiumIndexWire,
     ServerTimeWire,
 )
@@ -79,7 +84,7 @@ class Response[T]:
 
 
 class BinanceRestClient:
-    """Read-only market-data client for one environment.
+    """Read-only public/account-data client for one environment.
 
     Not thread-safe, and deliberately scoped to a single :class:`VenueEnvironment`
     — an instance that could switch environments mid-life is how testnet and
@@ -93,10 +98,12 @@ class BinanceRestClient:
         http: httpx.AsyncClient,
         raw_store: RawStore | None = None,
         budget: RateLimitBudget | None = None,
+        signer: BinanceSigner | None = None,
     ) -> None:
         self._environment = environment
         self._http = http
         self._raw_store = raw_store
+        self._signer = signer
         self._budget = budget or RateLimitBudget(
             limit_per_minute=FALLBACK_WEIGHT_LIMIT_PER_MINUTE
         )
@@ -136,14 +143,31 @@ class BinanceRestClient:
         market: Market,
         endpoint: str,
         params: Sequence[tuple[str, str | int]] = (),
+        *,
+        signed: bool = False,
     ) -> tuple[Any, RawRecord | None, WeightSnapshot | None]:
         path = self._endpoints.path(market, endpoint)
         weight = documented_weight(market, path)
         self._budget.check(weight)
 
         url = self._endpoints.url(market, endpoint)
+        request_url = url
+        headers: dict[str, str] | None = None
+        if signed:
+            if self._signer is None:
+                raise BinanceAuthenticationError(
+                    f"{path}: signed read requires a configured Binance signer"
+                )
+            # The signer returns the final exact query string. Put those bytes
+            # directly on the URL rather than asking an HTTP client to re-encode
+            # a parameter mapping after the signature was calculated.
+            request_url = f"{url}?{self._signer.signed_query(params)}"
+            headers = self._signer.headers()
         try:
-            response = await self._http.get(url, params=list(params))
+            if signed:
+                response = await self._http.get(request_url, headers=headers)
+            else:
+                response = await self._http.get(request_url, params=list(params))
         except httpx.HTTPError as exc:
             raise BinanceTransportError(f"{path}: {type(exc).__name__}: {exc}") from exc
 
@@ -167,7 +191,9 @@ class BinanceRestClient:
             )
 
         try:
-            payload = json.loads(response.content)
+            # `leverageBracket` emits JSON number tokens for ratios. Parsing
+            # those directly as Decimal prevents binary float error at ingress.
+            payload = json.loads(response.content, parse_float=Decimal)
         except json.JSONDecodeError as exc:
             raise BinanceTransportError(f"{path}: response was not JSON: {exc}") from exc
         return payload, raw, observed
@@ -232,6 +258,34 @@ class BinanceRestClient:
             raise BinanceTransportError("fundingInfo: expected a JSON array")
         return Response(
             value=[FundingInfoWire.model_validate(item) for item in payload],
+            raw=raw,
+            weight=weight,
+        )
+
+    async def margin_brackets(
+        self, symbol: str | None = None
+    ) -> Response[list[LeverageBracketWire]]:
+        """Account-specific maintenance-margin tiers from a signed read.
+
+        With no symbol Binance returns the whole account's futures universe in a
+        single weight-1 request. A symbol query may return an object instead of
+        an array, so both documented variants normalize to a list.
+        """
+        params: tuple[tuple[str, str], ...] = (
+            (("symbol", symbol.strip().upper()),) if symbol is not None else ()
+        )
+        payload, raw, weight = await self._get(
+            Market.USDM,
+            "leverageBracket",
+            params,
+            signed=True,
+        )
+        if isinstance(payload, dict):
+            payload = [payload]
+        if not isinstance(payload, list):
+            raise BinanceTransportError("leverageBracket: expected an object or JSON array")
+        return Response(
+            value=[LeverageBracketWire.model_validate(item) for item in payload],
             raw=raw,
             weight=weight,
         )

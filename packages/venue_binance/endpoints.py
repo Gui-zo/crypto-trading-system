@@ -54,6 +54,7 @@ DOCUMENTED_WEIGHTS: dict[tuple[Market, str], int] = {
     (Market.USDM, "/fapi/v1/premiumIndex"): 1,
     (Market.USDM, "/fapi/v1/fundingRate"): 1,
     (Market.USDM, "/fapi/v1/fundingInfo"): 1,
+    (Market.USDM, "/fapi/v1/leverageBracket"): 1,
     (Market.USDM, "/fapi/v1/ticker/bookTicker"): 2,
     (Market.USDM, "/fapi/v1/klines"): 5,
     (Market.SPOT, "/api/v3/ping"): 1,

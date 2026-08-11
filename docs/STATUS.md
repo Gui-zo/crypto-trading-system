@@ -6,7 +6,7 @@
 > factual; when work completes, move it from **Backlog** to the relevant phase
 > entry.
 
-_Last updated: 2026-08-09 (Phase 1)_
+_Last updated: 2026-08-11 (Phase 2 complete; exact production hash approved)_
 
 > Every figure below is a dated snapshot. Run **`dashboard`** for the live
 > operator view — connectivity, kill switches, run history, and promotion-gate
@@ -31,24 +31,28 @@ runtime.
 Locked decisions: funding carry as the edge thesis (ADR-0004), funding-cadence
 decisions (ADR-0005), local-first (ADR-0002), prospective-only promotion gates
 (ADR-0012), venue-environment scoping from day one (ADR-0010), a filtered
-instrument universe (ADR-0016). Full rationale in `docs/adr/` (16 ADRs).
-**ADR-0015 is the most load-bearing** — it is where documentation met reality.
+instrument universe (ADR-0016), content-addressed catalog review (ADR-0017).
+Full rationale in `docs/adr/` (18 ADRs).
+**ADRs 0015 and 0018 are the load-bearing venue records** — public and
+authenticated documentation met reality there.
 
 ## Current state (one paragraph)
 
-**Phases 0 and 1 are complete.** Phase 0 built the governance surface: the mode
-ladder, the eight-scope append-only kill switch, the watchdog policy,
-promotion-gate arithmetic, calibration metrics, and Decimal/quantization
-discipline. Phase 1 added a **read-only Binance adapter, live-verified against
-production** — tolerant wire schemas, environment-scoped raw retention,
-header-driven rate-limit budgeting, and a WebSocket consumer with reconnect and
-sequence-gap detection. 425 tests, ruff and strict mypy clean, one Alembic
-migration with no drift. The reconciliation against the live API produced
-**seven findings that contradicted our documented assumptions**, recorded in
-ADR-0015; the largest is that 4-hourly funding is the *majority* on the venue,
-not the exception. **There is still no market-data persistence, no model, no risk
-engine, and no code path that can submit an order.** Every promotion gate reads
-`UNAVAILABLE`, which is the correct reading for a system that has never traded.
+**Phases 0–2 are complete; Phase 3 has not started.**
+Phase 0 built the governance surface. Phase 1 added the public read-only Binance
+adapter, raw retention, rate-limit budgeting, and WebSocket gap handling. Phase 2
+adds the signed read-only maintenance-bracket path, exact filter/funding/margin
+domain values, canonical SHA-256 catalogs, immutable observations, and
+append-only human review. A changed catalog returns to `PENDING_REVIEW`; it never
+falls back to an older approved hash. 442 tests, ruff and strict mypy clean, two
+Alembic migrations with no drift. The public reconciliation produced seven
+findings in ADR-0015; the signed production capture succeeded and its findings
+are recorded in ADR-0018. The resulting 527-specification catalog is `APPROVED`
+under exact hash
+`d3a5898667985f09ce7d6ea9e7c0be1b6b759cca499833f8cbbe71687e659787`.
+**There is still no market-data persistence, no model, no risk engine, and no
+code path that can submit an order.** Every promotion gate reads
+`UNAVAILABLE`, correctly, because the system has never traded.
 
 ## Specification phases
 
@@ -59,7 +63,7 @@ hold. No later phase is inferred from an earlier component existing.
 |---|---|---|
 | 0 — Governance and repository foundation | Reproducible env, CI, structured logging, audit controls, mode ladder, ported safety spine | ✅ **Done** |
 | 1 — Read-only Binance integration | REST + WebSocket ingestion, tolerant schemas, raw retention, rate-limit budget, reconnect/gap tests, live-verified against production read-only | ✅ **Done** (ADR-0015) |
-| 2 — Instrument and margin specification | `exchangeInfo` filters, `leverageBracket` tiers, per-symbol funding schedule, versioned and fail-closed on change | 🔴 **Blocked** — needs a read-only API key |
+| 2 — Instrument and margin specification | `exchangeInfo` filters, `leverageBracket` tiers, per-symbol funding schedule, versioned and fail-closed on change | ✅ **Done** — signed production capture reconciled and exact catalog hash approved (ADR-0018) |
 | 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | ⬜ Not started |
 | 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | ⬜ Not started |
 | 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | ⬜ Not started |
@@ -84,32 +88,32 @@ packages/domain/            Pure logic. No framework, DB, or venue imports.
   promotion.py              Prospective gates, accrual + ceiling kinds (ADR-0012)
   calibration.py            Brier/ECE/reliability/PIT/CRPS + Brier skill
   precision.py              Decimal discipline, filter quantization (ADR-0011)
-  instrument.py             Symbol identity, venue scope, funding schedule
+  instrument.py             Identity + exact filters/funding/margin catalog
   market_data.py            Mark price, funding, book ticker, kline observations
   errors.py                 Domain exception base
 packages/venue_binance/     Read-only venue adapter. No order path exists.
   endpoints.py              Base URLs and paths — one place to correct routing
-  auth.py                   HMAC-SHA256 signing (UNVERIFIED — never sent)
+  auth.py                   HMAC-SHA256 signing (still unverified live)
   errors.py                 Status + error-code classification
   rate_limit.py             Weight budget driven by the venue's own headers
   schemas.py                Tolerant wire models (extra=allow)
   mapping.py                Wire to domain; the only place field names matter
-  client.py                 REST client; retains raw bytes before parsing
+  client.py                 REST; public data + signed read-only margin brackets
   ws_client.py              Combined-stream consumer, reconnect + gap detection
 packages/config/            Settings (pydantic-settings) + SecretProvider
 packages/storage/           Immutable content-addressed raw-payload store
 packages/observability/     JSON logging with credential redaction
-packages/db/                Base, engine, Phase-0 models, safety + health repos
+packages/db/                Audit repos + immutable instrument catalog/reviews
 apps/cli/main.py            Every command; owns the transaction
-migrations/                 Alembic (1 migration: c02df1421a01)
+migrations/                 Alembic (2 migrations through f47c2c9d48ab)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
-tests/                      unit/ (367) + integration/ (29) + contract/ (29)
+tests/                      440 total: unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 
 ## Commands
 
-The governance surface plus the Phase-1 read-only venue commands.
+The governance surface plus the Phase-1/2 read-only venue commands.
 
 | Command | Purpose |
 |---|---|
@@ -122,9 +126,12 @@ The governance surface plus the Phase-1 read-only venue commands.
 | `promotion-status` | Gates and the binding constraint |
 | `binance-status` | Venue connectivity, clock drift, weight budget, universe size |
 | `binance-snapshot` | Fetch public market data and retain every raw byte |
+| `sync-instruments` | Signed read-only sync; version filters, funding, and margin tiers |
+| `instrument-status` | Current exact catalog hash, exclusions, and review status |
+| `instrument-review` | Append APPROVE/REJECT for the exact current catalog hash |
 
-Planned, each landing in its phase: `sync-instruments`, `backfill`,
-`record-funding`, `record-prices`, `daily-sync`, `carry-scan`, `paper-trade`,
+Planned, each landing in its phase: `backfill`, `record-funding`, `record-prices`,
+`daily-sync`, `carry-scan`, `paper-trade`,
 `paper-cycle`, `paper-report`, `reconcile`, `calibration`, `backtest`.
 
 ## Data model
@@ -134,6 +141,9 @@ Planned, each landing in its phase: `sync-instruments`, `backfill`,
 | `safety_control_events` | Append-only kill-switch transitions; current state = max sequence per (env, scope, key) | ✅ |
 | `operational_job_runs` | One row per CLI/cron invocation, written before work starts | n/a (global) |
 | `operational_health_assessments` | Every watchdog verdict, passing and blocking | ✅ |
+| `instrument_catalog_versions` | Immutable canonical catalogs, unique by environment + SHA-256 | ✅ |
+| `instrument_catalog_observations` | Every sync linked to its retained raw sources | ✅ |
+| `instrument_catalog_review_events` | Append-only exact-hash approvals and rejections | ✅ |
 
 Every market-keyed table added later **must** carry `environment` (ADR-0010).
 
@@ -142,13 +152,14 @@ Every market-keyed table added later **must** carry `environment` (ADR-0010).
 Numbered so they can be referenced. This section exists to stop anyone drawing
 wrong conclusions from the numbers above.
 
-1. **Phase 2 is blocked on a read-only API key.** `GET /fapi/v1/leverageBracket`
-   returns HTTP 401 unauthenticated (ADR-0015 finding 2), and maintenance-margin
-   tiers are the input to the liquidation-distance invariant. Create the key with
-   **trading disabled and IP-restricted**.
-2. **Signing has never been exercised.** `venue_binance/auth.py` is documentation
-   plus reasoning; no signed request has ever been sent. Expect it to be wrong on
-   first contact and to need one localized fix (ADR-0003).
+1. **Catalog approval is snapshot-specific.** The current 527-specification hash
+   is approved, but any sizing-relevant venue change creates a new hash and
+   immediately returns the authoritative catalog to `PENDING_REVIEW`; there is
+   deliberately no fallback to this older approved version.
+2. **Only one account-specific bracket capture has been observed.** Signing and
+   the 4–12 tier wire shape are verified, but all 993 records omitted the optional
+   `notionalCoef`. A future account-specific coefficient must create a new hash
+   and return it to review (ADR-0018).
 3. **WebSocket `markPrice` and `kline` payload shapes are unverified.** Only
    `bookTicker` was captured before the probe connections started timing out. The
    combined-stream envelope is confirmed.
@@ -187,29 +198,23 @@ wrong conclusions from the numbers above.
 
 ## Backlog (next increments, roughly ordered)
 
-1. **Create a read-only, IP-restricted Binance API key** — unblocks Phase 2 and
-   limitation 1. This is a manual step for the operator, not a code change.
-2. **Phase 2 — `sync-instruments`.** `exchangeInfo` filters and `leverageBracket`
-   tiers, content-addressed and versioned, fail-closed on change. Needs (1).
-3. **Verify the signing format** against any authenticated endpoint, then replace
-   limitation 2 with a recorded finding.
-4. **Phase 3 — archive backfill.** `data.binance.vision` klines + full
+1. **Phase 3 — archive backfill.** `data.binance.vision` klines + full
    `fundingRate` history, point-in-time integrity checks, market-data tables.
-5. **Register scheduled producers** in `SCHEDULED_PRODUCERS` and make
+2. **Register scheduled producers** in `SCHEDULED_PRODUCERS` and make
    `health-check` real; add the cron entries.
-6. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
+3. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
    recorded corpus.
-7. Validate the remaining freshness tolerances (limitation 10) against measured
+4. Validate the remaining freshness tolerances (limitation 10) against measured
    latency.
-8. Content-addressed configuration versions and immutable model provenance —
-   port the *pattern* from the sibling's ADR-0009/0015.
+5. Immutable model provenance — port the *pattern* from the sibling's
+   ADR-0009/0015. Instrument catalog versioning now exists as the local pattern.
 
 ## Verification
 
 All four must pass before any commit:
 
 ```bash
-uv run pytest -q          # 425 tests
+uv run pytest -q          # 442 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations

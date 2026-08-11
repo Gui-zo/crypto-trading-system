@@ -9,6 +9,7 @@ sends.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -16,17 +17,18 @@ import pytest
 
 from domain.instrument import VenueEnvironment
 from storage.raw_store import InMemoryRawStore
+from venue_binance.auth import BinanceSigner
 from venue_binance.client import BinanceRestClient
 from venue_binance.endpoints import Market
 from venue_binance.errors import (
     BinanceAPIError,
+    BinanceAuthenticationError,
     BinanceRateLimitError,
     BinanceTransportError,
 )
 from venue_binance.rate_limit import RateLimitBudget, RateLimitExceeded
 
 RECORDED = Path(__file__).resolve().parents[1] / "fixtures" / "binance" / "recorded"
-
 
 def recorded(name: str) -> bytes:
     return (RECORDED / name).read_bytes()
@@ -73,12 +75,14 @@ def client(
     raw_store: InMemoryRawStore | None = None,
     budget: RateLimitBudget | None = None,
     environment: VenueEnvironment = VenueEnvironment.PRODUCTION,
+    signer: BinanceSigner | None = None,
 ) -> BinanceRestClient:
     return BinanceRestClient(
         environment=environment,
         http=httpx.AsyncClient(transport=transport),
         raw_store=raw_store,
         budget=budget,
+        signer=signer,
     )
 
 
@@ -125,6 +129,30 @@ async def test_clock_drift_is_measured_against_venue_time() -> None:
     drift, server_time = await client(handler()).clock_drift()
     assert isinstance(drift, float)
     assert server_time.tzinfo is not None
+
+
+async def test_margin_brackets_use_a_signed_read_and_keep_decimal_exactness() -> None:
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=recorded("fapi_leverageBracket.trimmed.json"))
+
+    signer = BinanceSigner("test-api-key", "test-secret")
+    response = await client(httpx.MockTransport(respond), signer=signer).margin_brackets()
+
+    assert response.value[0].symbol == "BTCUSDT"
+    assert response.value[0].brackets[0].maintMarginRatio == Decimal("0.004")
+    assert seen[0].headers["X-MBX-APIKEY"] == "test-api-key"
+    query = seen[0].url.query.decode()
+    unsigned, separator, signature = query.rpartition("&signature=")
+    assert separator
+    assert signer.verify(unsigned, signature)
+
+
+async def test_a_signed_read_without_a_signer_fails_before_transport() -> None:
+    with pytest.raises(BinanceAuthenticationError, match="requires a configured"):
+        await client(handler()).margin_brackets()
 
 
 # ---------------------------------------------------------------------------

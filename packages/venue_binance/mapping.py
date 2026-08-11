@@ -21,16 +21,26 @@ from decimal import Decimal
 from domain.instrument import (
     ContractType,
     FundingSchedule,
+    InstrumentCatalog,
+    InstrumentExclusion,
     InstrumentRef,
+    InstrumentSpecification,
     InstrumentStatus,
+    MaintenanceMarginTier,
+    MarginSchedule,
+    PriceFilter,
+    QuantityFilter,
+    VenueScope,
 )
 from domain.market_data import BookTicker, FundingRateObservation, Kline, MarkPriceSnapshot
 from domain.precision import PrecisionError, parse_decimal
 from venue_binance.schemas import (
     BookTickerStreamWire,
     BookTickerWire,
+    ExchangeInfoWire,
     FundingInfoWire,
     FundingRateWire,
+    LeverageBracketWire,
     PremiumIndexWire,
     SymbolWire,
 )
@@ -40,7 +50,7 @@ class MappingError(ValueError):
     """A payload parsed as JSON but cannot be read as the fact it claims to be."""
 
 
-def _require(value: str | None, field: str, symbol: str) -> Decimal:
+def _require(value: str | int | Decimal | None, field: str, symbol: str) -> Decimal:
     if value is None:
         raise MappingError(f"{symbol}: required numeric field {field!r} is absent")
     try:
@@ -49,7 +59,9 @@ def _require(value: str | None, field: str, symbol: str) -> Decimal:
         raise MappingError(f"{symbol}: field {field!r} is not a valid decimal: {value!r}") from exc
 
 
-def _optional(value: str | None, field: str, symbol: str) -> Decimal | None:
+def _optional(
+    value: str | int | Decimal | None, field: str, symbol: str
+) -> Decimal | None:
     return None if value is None else _require(value, field, symbol)
 
 
@@ -103,6 +115,175 @@ def to_funding_schedule(wire: FundingInfoWire) -> FundingSchedule:
         rate_floor=_optional(
             wire.adjustedFundingRateFloor, "adjustedFundingRateFloor", wire.symbol
         ),
+    )
+
+
+def to_margin_schedule(wire: LeverageBracketWire) -> MarginSchedule:
+    tiers: list[MaintenanceMarginTier] = []
+    for item in wire.brackets:
+        if item.bracket is None:
+            raise MappingError(f"{wire.symbol}: margin bracket number is absent")
+        if item.initialLeverage is None:
+            raise MappingError(f"{wire.symbol}: initialLeverage is absent")
+        tiers.append(
+            MaintenanceMarginTier(
+                bracket=item.bracket,
+                initial_leverage=item.initialLeverage,
+                notional_floor=_require(item.notionalFloor, "notionalFloor", wire.symbol),
+                notional_cap=_require(item.notionalCap, "notionalCap", wire.symbol),
+                maintenance_margin_ratio=_require(
+                    item.maintMarginRatio, "maintMarginRatio", wire.symbol
+                ),
+                cumulative=_require(item.cum, "cum", wire.symbol),
+            )
+        )
+    return MarginSchedule(
+        symbol=wire.symbol,
+        tiers=tuple(tiers),
+        notional_coefficient=_optional(wire.notionalCoef, "notionalCoef", wire.symbol),
+    )
+
+
+def _require_text(value: str | None, field: str, symbol: str) -> str:
+    normalized = (value or "").strip().upper()
+    if not normalized:
+        raise MappingError(f"{symbol}: required text field {field!r} is absent")
+    return normalized
+
+
+def to_instrument_specification(
+    wire: SymbolWire,
+    *,
+    scope: VenueScope,
+    funding_schedule: FundingSchedule,
+    margin_schedule: MarginSchedule,
+) -> InstrumentSpecification:
+    """Map one symbol only when every Phase-2 safety input is present."""
+    if not is_carry_candidate(wire):
+        raise MappingError(f"{wire.symbol}: symbol is outside the carry universe")
+    price = wire.filter_of("PRICE_FILTER")
+    quantity = wire.filter_of("LOT_SIZE")
+    notional = wire.filter_of("MIN_NOTIONAL")
+    if price is None:
+        raise MappingError(f"{wire.symbol}: PRICE_FILTER is absent")
+    if quantity is None:
+        raise MappingError(f"{wire.symbol}: LOT_SIZE is absent")
+    if notional is None:
+        raise MappingError(f"{wire.symbol}: MIN_NOTIONAL is absent")
+
+    return InstrumentSpecification(
+        instrument=InstrumentRef(scope=scope, symbol=wire.symbol, market="usdm"),
+        status=to_instrument_status(wire.status),
+        contract_type=to_contract_type(wire.contractType),
+        base_asset=_require_text(wire.baseAsset, "baseAsset", wire.symbol),
+        quote_asset=_require_text(wire.quoteAsset, "quoteAsset", wire.symbol),
+        margin_asset=_require_text(wire.marginAsset, "marginAsset", wire.symbol),
+        price_filter=PriceFilter(
+            min_price=_require(price.minPrice, "PRICE_FILTER.minPrice", wire.symbol),
+            max_price=_require(price.maxPrice, "PRICE_FILTER.maxPrice", wire.symbol),
+            tick_size=_require(price.tickSize, "PRICE_FILTER.tickSize", wire.symbol),
+        ),
+        quantity_filter=QuantityFilter(
+            min_quantity=_require(quantity.minQty, "LOT_SIZE.minQty", wire.symbol),
+            max_quantity=_require(quantity.maxQty, "LOT_SIZE.maxQty", wire.symbol),
+            step_size=_require(quantity.stepSize, "LOT_SIZE.stepSize", wire.symbol),
+        ),
+        minimum_notional=_require(notional.notional, "MIN_NOTIONAL.notional", wire.symbol),
+        funding_schedule=funding_schedule,
+        margin_schedule=margin_schedule,
+        liquidation_fee=_require(wire.liquidationFee, "liquidationFee", wire.symbol),
+    )
+
+
+def _unique_by_symbol[T](items: list[T], source: str) -> dict[str, T]:
+    indexed: dict[str, T] = {}
+    for item in items:
+        symbol = str(getattr(item, "symbol", "")).strip().upper()
+        if not symbol:
+            raise MappingError(f"{source}: item has no symbol")
+        if symbol in indexed:
+            raise MappingError(f"{source}: duplicate symbol {symbol}")
+        indexed[symbol] = item
+    return indexed
+
+
+def to_instrument_catalog(
+    exchange_info: ExchangeInfoWire,
+    funding_info: list[FundingInfoWire],
+    margin_brackets: list[LeverageBracketWire],
+    *,
+    scope: VenueScope,
+) -> InstrumentCatalog:
+    """Build the complete universe, explicitly excluding every incomplete symbol.
+
+    ``fundingInfo`` documents only symbols whose funding settings were adjusted.
+    Missing from that response therefore does **not** mean "use eight hours"; it
+    means the symbol has no venue-observed schedule under ADR-0016 and is excluded.
+    """
+    funding_by_symbol = _unique_by_symbol(funding_info, "fundingInfo")
+    margin_by_symbol = _unique_by_symbol(margin_brackets, "leverageBracket")
+    candidates = [symbol for symbol in exchange_info.symbols if is_carry_candidate(symbol)]
+    specifications: list[InstrumentSpecification] = []
+    exclusions: list[InstrumentExclusion] = []
+
+    for wire in candidates:
+        reasons: list[str] = []
+        funding: FundingSchedule | None = None
+        margin: MarginSchedule | None = None
+        funding_wire = funding_by_symbol.get(wire.symbol)
+        margin_wire = margin_by_symbol.get(wire.symbol)
+
+        if funding_wire is None:
+            reasons.append("MISSING_FUNDING_SCHEDULE")
+        else:
+            try:
+                funding = to_funding_schedule(funding_wire)
+            except (MappingError, ValueError):
+                reasons.append("INVALID_FUNDING_SCHEDULE")
+
+        if margin_wire is None:
+            reasons.append("MISSING_MARGIN_SCHEDULE")
+        else:
+            try:
+                margin = to_margin_schedule(margin_wire)
+            except (MappingError, ValueError):
+                reasons.append("INVALID_MARGIN_SCHEDULE")
+
+        required_filters = {
+            "PRICE_FILTER": "MISSING_PRICE_FILTER",
+            "LOT_SIZE": "MISSING_QUANTITY_FILTER",
+            "MIN_NOTIONAL": "MISSING_MINIMUM_NOTIONAL",
+        }
+        for filter_type, reason in required_filters.items():
+            if wire.filter_of(filter_type) is None:
+                reasons.append(reason)
+        if not (wire.baseAsset and wire.quoteAsset and wire.marginAsset):
+            reasons.append("MISSING_ASSET_IDENTITY")
+        if wire.liquidationFee is None:
+            reasons.append("MISSING_LIQUIDATION_FEE")
+
+        if reasons:
+            exclusions.append(InstrumentExclusion(wire.symbol, tuple(reasons)))
+            continue
+        assert funding is not None and margin is not None
+        try:
+            specifications.append(
+                to_instrument_specification(
+                    wire,
+                    scope=scope,
+                    funding_schedule=funding,
+                    margin_schedule=margin,
+                )
+            )
+        except (MappingError, ValueError):
+            exclusions.append(InstrumentExclusion(wire.symbol, ("INVALID_SPECIFICATION",)))
+
+    return InstrumentCatalog(
+        scope=scope,
+        total_symbols=len(exchange_info.symbols),
+        candidate_symbols=len(candidates),
+        specifications=tuple(specifications),
+        exclusions=tuple(exclusions),
     )
 
 

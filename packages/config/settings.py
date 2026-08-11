@@ -57,9 +57,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6380/1"
 
     # Which Binance environment the venue adapter targets and every row is scoped
-    # to. Credentials themselves are read via the SecretProvider, never here.
+    # to. Credentials themselves are read via SecretProvider, never Settings.
     binance_env: BinanceEnv = BinanceEnv.TESTNET
-    binance_api_key_id: str = ""
 
     # Raw-payload retention. Defaults keep a local checkout working with no
     # configuration; a deployed runtime sets the backend and bucket via env.

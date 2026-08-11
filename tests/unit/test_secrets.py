@@ -14,6 +14,7 @@ from config.secrets import (
     MissingSecretError,
     SecretProvider,
 )
+from config.settings import Settings
 
 
 def test_both_providers_satisfy_the_protocol() -> None:
@@ -91,3 +92,9 @@ def test_the_env_provider_snapshots_the_environment(monkeypatch: pytest.MonkeyPa
     provider = EnvSecretProvider()
     os.environ["SOME_SECRET"] = "second"
     assert provider.get_secret("SOME_SECRET") == "first"
+
+
+def test_api_key_never_becomes_a_serializable_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BINANCE_API_KEY_ID", "sensitive-key-identifier")
+    settings = Settings()
+    assert "binance_api_key_id" not in settings.model_dump()

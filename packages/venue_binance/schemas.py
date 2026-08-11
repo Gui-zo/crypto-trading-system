@@ -24,6 +24,8 @@ because anyone predicted them:
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -148,6 +150,28 @@ class FundingInfoWire(_Wire):
     disclaimer: bool | None = None
     #: `null` for BTCUSDT and ETHUSDT, an integer elsewhere. See module docstring.
     updateTime: int | None = None
+
+
+class MarginBracketTierWire(_Wire):
+    """One tier from the authenticated ``leverageBracket`` response.
+
+    Unlike most Binance price fields, the endpoint emits ratios and notionals as
+    JSON numbers. The REST client parses JSON floating-point tokens directly into
+    :class:`Decimal` before validation, so binary float error never enters here.
+    """
+
+    bracket: int | None = None
+    initialLeverage: int | None = None
+    notionalCap: Decimal | None = None
+    notionalFloor: Decimal | None = None
+    maintMarginRatio: Decimal | None = None
+    cum: Decimal | None = None
+
+
+class LeverageBracketWire(_Wire):
+    symbol: str
+    notionalCoef: Decimal | None = None
+    brackets: list[MarginBracketTierWire] = []
 
 
 class BookTickerWire(_Wire):

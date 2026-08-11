@@ -1,4 +1,4 @@
-"""Contract tests against **real** Binance responses recorded 2026-08-09.
+"""Contract tests against **real** Binance responses recorded 2026-08-09/11.
 
 Not synthetic fixtures. Every payload here is bytes the venue actually sent (two
 are trimmed to a subset of a large list; see `tests/fixtures/binance/README.md`).
@@ -33,6 +33,7 @@ from venue_binance.schemas import (
     ExchangeInfoWire,
     FundingInfoWire,
     FundingRateWire,
+    LeverageBracketWire,
     PremiumIndexWire,
     ServerTimeWire,
 )
@@ -253,6 +254,45 @@ def test_an_unrecognised_status_is_not_tradeable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# leverageBracket — authenticated first contact
+# ---------------------------------------------------------------------------
+
+
+def test_authenticated_leverage_brackets_parse_and_map() -> None:
+    """The signed production response matches the tolerant wire schema."""
+    payload = load("fapi_leverageBracket.trimmed.json")
+    assert isinstance(payload, list)
+    schedules = {
+        item["symbol"]: mapping.to_margin_schedule(LeverageBracketWire.model_validate(item))
+        for item in payload
+    }
+
+    btc = schedules["BTCUSDT"]
+    assert len(btc.tiers) == 12
+    assert btc.tiers[0].initial_leverage == 150
+    assert btc.tiers[0].notional_cap == Decimal("300000")
+    assert btc.tiers[0].maintenance_margin_ratio == Decimal("0.004")
+    assert btc.tiers[-1].notional_cap == Decimal("1800000000")
+
+    long_tail = schedules["HUSDT"]
+    assert len(long_tail.tiers) == 4
+    assert long_tail.tiers[0].initial_leverage == 4
+    assert long_tail.tiers[0].maintenance_margin_ratio == Decimal("0.145")
+
+
+def test_recorded_margin_tiers_are_contiguous_and_increasingly_conservative() -> None:
+    payload = load("fapi_leverageBracket.trimmed.json")
+    assert isinstance(payload, list)
+    for item in payload:
+        schedule = mapping.to_margin_schedule(LeverageBracketWire.model_validate(item))
+        assert schedule.tiers[0].notional_floor == 0
+        for previous, current in zip(schedule.tiers, schedule.tiers[1:], strict=False):
+            assert current.notional_floor == previous.notional_cap
+            assert current.initial_leverage <= previous.initial_leverage
+            assert current.maintenance_margin_ratio >= previous.maintenance_margin_ratio
+
+
+# ---------------------------------------------------------------------------
 # bookTicker — spot and futures disagree
 # ---------------------------------------------------------------------------
 
@@ -335,12 +375,11 @@ def test_recorded_error_bodies_classify_correctly() -> None:
     assert not auth_error.is_retryable
 
 
-def test_leverage_bracket_needs_a_key_which_blocks_phase_two() -> None:
-    """**Finding.** Maintenance-margin tiers are not a public endpoint.
+def test_unauthenticated_leverage_bracket_still_requires_a_key() -> None:
+    """**Historical finding.** Maintenance-margin tiers are not public.
 
     `GET /fapi/v1/leverageBracket` returned HTTP 401 `-2014` unauthenticated. The
-    liquidation-distance invariant (ADR-0009) is computed from those tiers, so
-    Phase 2 needs a read-only API key before it can start.
+    successful signed response is covered separately above (ADR-0018).
     """
     body = load("fapi_error_bad_api_key.json")
     assert isinstance(body, dict)

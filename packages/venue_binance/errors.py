@@ -26,6 +26,10 @@ class BinanceTransportError(BinanceError):
     """The request never produced a usable response (DNS, TLS, timeout, reset)."""
 
 
+class BinanceAuthenticationError(BinanceError):
+    """A signed read was requested without locally configured credentials."""
+
+
 @dataclass
 class BinanceAPIError(BinanceError):
     """The venue answered with an error status and, usually, a coded body."""

@@ -54,7 +54,9 @@ carry it. Consequences are in [ADR-0016](0016-instrument-universe-and-funding-ca
 Maintenance-margin tiers are the input to the liquidation-distance invariant
 ([ADR-0009](0009-liquidation-distance-invariant.md)), which is the most important
 safety property in this project. **Phase 2 cannot start without a read-only API
-key.** That is now a scheduling fact rather than a surprise.
+key.** That was a scheduling fact rather than a surprise. The signed production
+path was subsequently live-verified on 2026-08-11; see
+[ADR-0018](0018-authenticated-leverage-bracket-reconciliation.md).
 
 ### 3. Testnet and production prices are *plausibly similar*
 
@@ -148,8 +150,8 @@ Honesty about the boundary of this reconciliation matters more than its length:
   before the probe connections began timing out. The combined-stream envelope is
   confirmed; those two payload shapes are not, and `ws_client` deliberately
   handles only the frame it has seen.
-- **Everything authenticated**: signing format, account state, user-data streams,
-  `leverageBracket`. `auth.py` remains documentation plus reasoning.
+- **Other authenticated surfaces**: account state and user-data streams. Signing
+  and `leverageBracket` were subsequently verified in ADR-0018.
 - **Rate-limit failure behaviour**: 429, 418, `Retry-After`, ban duration. The
   success-path headers are recorded; the failure path is inferred.
 - The raw (`/ws/<stream>`) WebSocket endpoint was unreachable during the probe
@@ -162,8 +164,8 @@ remaining items carry forward as explicit limitations in `docs/STATUS.md`.
 
 - The founding README's funding-cadence claim is wrong and is corrected wherever
   it appears.
-- Phase 2 is blocked on a read-only API key (finding 2) — the first hard external
-  dependency this project has had.
+- Phase 2 initially depended on a read-only API key (finding 2); that dependency
+  was satisfied and reconciled in ADR-0018.
 - Contract tests now fail if Binance changes any of these shapes, which is the
   point.
 - Re-record with `binance-snapshot` and diff. The command exists so that the next

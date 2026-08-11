@@ -15,9 +15,9 @@ session rather than the repositories:
   leaves RUNNING residue for the watchdog to find. That is the Phase-0 audit
   control, and it is why there is no "just run it quickly" path.
 
-Phase 0 exposes the governance surface only. There is no venue client, no market
-data, and no code path that can submit an order — see docs/STATUS.md for what
-each later phase adds.
+Phases 1-2 add read-only venue access and immutable instrument catalogs. There is
+still no market-data persistence and no code path that can submit an order — see
+docs/STATUS.md for the current boundary.
 """
 
 from __future__ import annotations
@@ -41,11 +41,16 @@ from dotenv import load_dotenv  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
+from config.secrets import EnvSecretProvider, FileSecretProvider  # noqa: E402
 from config.settings import Settings, load_settings  # noqa: E402
 from db.engine import create_engine, create_session_factory  # noqa: E402
+from db.instrument_repo import (  # noqa: E402
+    CatalogSourceArtifact,
+    InstrumentCatalogRepository,
+)
 from db.operational_health_repo import OperationalHealthRepository  # noqa: E402
 from db.safety_repo import SafetyControlRepository  # noqa: E402
-from domain.instrument import VenueEnvironment  # noqa: E402
+from domain.instrument import InstrumentReviewAction, VenueEnvironment  # noqa: E402
 from domain.modes import TradingMode, is_live, permits_new_orders  # noqa: E402
 from domain.operational_health import OperationalJobStatus  # noqa: E402
 from domain.promotion import (  # noqa: E402
@@ -68,16 +73,17 @@ from domain.safety import (  # noqa: E402
 )
 from observability.logging import configure_logging  # noqa: E402
 from storage.raw_store import create_raw_store  # noqa: E402
+from venue_binance.auth import BinanceSigner  # noqa: E402
 from venue_binance.client import BinanceRestClient, create_http_client  # noqa: E402
 from venue_binance.endpoints import Market  # noqa: E402
 from venue_binance.errors import BinanceError  # noqa: E402
-from venue_binance.mapping import is_carry_candidate  # noqa: E402
+from venue_binance.mapping import is_carry_candidate, to_instrument_catalog  # noqa: E402
 
 log = logging.getLogger("cli")
 
-#: Scheduled producers whose health the watchdog evaluates. Empty in Phase 0 —
-#: no collector exists yet — and deliberately not stubbed: a fabricated signal
-#: that always passes is worse than an honest "nothing to watch". Phase 1
+#: Scheduled producers whose health the watchdog evaluates. Empty through Phase 2 —
+#: no persistent collector exists yet — and deliberately not stubbed: a fabricated signal
+#: that always passes is worse than an honest "nothing to watch". Phase 3
 #: registers `record-funding` and `record-prices` here.
 SCHEDULED_PRODUCERS: tuple[str, ...] = ()
 
@@ -434,6 +440,175 @@ async def cmd_binance_snapshot(settings: Settings, args: argparse.Namespace) -> 
 
 
 # ---------------------------------------------------------------------------
+# instrument catalog
+# ---------------------------------------------------------------------------
+
+
+def _read_only_binance_signer() -> BinanceSigner:
+    api_key = EnvSecretProvider().require_secret("BINANCE_API_KEY_ID")
+    secret = FileSecretProvider().require_secret("BINANCE_API_SECRET_PATH")
+    return BinanceSigner(api_key, secret)
+
+
+def _catalog_source(endpoint: str, response: object) -> CatalogSourceArtifact:
+    raw = getattr(response, "raw", None)
+    if raw is None:
+        raise RuntimeError(f"{endpoint}: instrument sync requires raw-payload retention")
+    return CatalogSourceArtifact(
+        endpoint=endpoint,
+        key=raw.key,
+        sha256=raw.sha256,
+        size=raw.size,
+        fetched_at=raw.fetched_at,
+    )
+
+
+async def cmd_sync_instruments(settings: Settings, args: argparse.Namespace) -> int:
+    """Fetch and version every input needed to size a futures instrument."""
+    environment = _venue_environment(settings)
+
+    async def body(session: AsyncSession) -> int:
+        store = create_raw_store(settings)
+        signer = _read_only_binance_signer()
+        async with create_http_client() as http:
+            api = BinanceRestClient(
+                environment=environment,
+                http=http,
+                raw_store=store,
+                signer=signer,
+            )
+            exchange = await api.exchange_info()
+            funding = await api.funding_info()
+            brackets = await api.margin_brackets()
+
+        catalog = to_instrument_catalog(
+            exchange.value,
+            funding.value,
+            brackets.value,
+            scope=api.scope,
+        )
+        sources = (
+            _catalog_source("exchangeInfo", exchange),
+            _catalog_source("fundingInfo", funding),
+            _catalog_source("leverageBracket", brackets),
+        )
+        observed_at = max(source.fetched_at for source in sources)
+        repo = InstrumentCatalogRepository(session, environment=environment.value)
+        result = await repo.record_catalog(
+            catalog,
+            sources=sources,
+            observed_at=observed_at,
+        )
+
+        change = "CHANGED" if result.changed_from_previous else "unchanged"
+        novelty = "new version" if result.created_new_version else "known version"
+        print(f"environment       {environment.value}")
+        print(f"catalog_sha256    {result.status.content_sha256}")
+        print(f"review_status     {result.status.review_status.value}")
+        print(f"version           {novelty}; {change}")
+        print(f"venue_symbols     {result.status.total_symbols}")
+        print(f"carry_candidates  {result.status.candidate_symbols}")
+        print(f"complete_specs    {result.status.instrument_count}")
+        print(f"excluded          {result.status.excluded_count}")
+        if result.status.review_status.value == "PENDING_REVIEW":
+            print("\nPENDING_REVIEW: sizing must remain blocked until this exact hash is reviewed")
+        return 0
+
+    return await _run_audited(
+        settings,
+        job_name="sync-instruments",
+        argv=sys.argv[1:],
+        body=body,
+    )
+
+
+def _exclusion_summary(catalog: dict[str, object]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    exclusions = catalog.get("exclusions", [])
+    if not isinstance(exclusions, list):
+        return summary
+    for exclusion in exclusions:
+        if not isinstance(exclusion, dict):
+            continue
+        reasons = exclusion.get("reasons", [])
+        if not isinstance(reasons, list):
+            continue
+        for reason in reasons:
+            name = str(reason)
+            summary[name] = summary.get(name, 0) + 1
+    return dict(sorted(summary.items()))
+
+
+async def cmd_instrument_status(settings: Settings, args: argparse.Namespace) -> int:
+    async with _session(settings) as session:
+        repo = InstrumentCatalogRepository(session, environment=settings.binance_env.value)
+        status = await repo.current_status()
+        versions, observations, reviews = await repo.counts()
+    report: dict[str, object]
+    if status is None:
+        report = {
+            "environment": settings.binance_env.value,
+            "status": "UNAVAILABLE",
+            "versions": versions,
+            "observations": observations,
+            "reviews": reviews,
+        }
+        if args.json:
+            _print(report, as_json=True)
+        else:
+            print("UNAVAILABLE  no instrument catalog has been synchronized")
+        return 0
+
+    report = {
+        "environment": settings.binance_env.value,
+        "status": status.review_status.value,
+        "catalog_sha256": status.content_sha256,
+        "observed_at": status.observed_at,
+        "venue_symbols": status.total_symbols,
+        "carry_candidates": status.candidate_symbols,
+        "complete_specs": status.instrument_count,
+        "excluded": status.excluded_count,
+        "exclusion_reasons": _exclusion_summary(status.catalog),
+        "versions": versions,
+        "observations": observations,
+        "reviews": reviews,
+    }
+    if args.json:
+        _print(report, as_json=True)
+    else:
+        for key, value in report.items():
+            print(f"{key:20} {value}")
+        if status.review_status.value != "APPROVED":
+            print("\nBLOCKED: current instrument specifications are not approved")
+    return 0
+
+
+async def cmd_instrument_review(settings: Settings, args: argparse.Namespace) -> int:
+    action = InstrumentReviewAction(args.action.upper())
+
+    async def body(session: AsyncSession) -> int:
+        repo = InstrumentCatalogRepository(session, environment=settings.binance_env.value)
+        status = await repo.review_current(
+            content_sha256=args.hash,
+            action=action,
+            actor=args.actor,
+            reason=args.reason,
+        )
+        print(
+            f"{action.value} catalog={status.content_sha256} "
+            f"status={status.review_status.value}"
+        )
+        return 0
+
+    return await _run_audited(
+        settings,
+        job_name="instrument-review",
+        argv=sys.argv[1:],
+        body=body,
+    )
+
+
+# ---------------------------------------------------------------------------
 # promotion-status
 # ---------------------------------------------------------------------------
 
@@ -582,7 +757,7 @@ async def cmd_dashboard(settings: Settings, args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="crypto-trading-system",
-        description="Operational CLI. Phase 0: governance surface only.",
+        description="Operational CLI: governance and read-only venue/catalog surface.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -629,6 +804,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     snapshot.add_argument("--out", help="raw-store directory override")
     snapshot.set_defaults(func=cmd_binance_snapshot)
+
+    sync_instruments = sub.add_parser(
+        "sync-instruments",
+        help="version exchange filters, funding schedules, and margin tiers",
+    )
+    sync_instruments.set_defaults(func=cmd_sync_instruments)
+
+    instrument_status = sub.add_parser(
+        "instrument-status", help="current catalog hash and human-review state"
+    )
+    instrument_status.add_argument("--json", action="store_true")
+    instrument_status.set_defaults(func=cmd_instrument_status)
+
+    instrument_review = sub.add_parser(
+        "instrument-review", help="approve or reject the exact current catalog hash"
+    )
+    instrument_review.add_argument("--hash", required=True, help="full current SHA-256")
+    instrument_review.add_argument(
+        "--action",
+        required=True,
+        choices=[action.value for action in InstrumentReviewAction],
+    )
+    instrument_review.add_argument("--actor", required=True)
+    instrument_review.add_argument("--reason", required=True)
+    instrument_review.set_defaults(func=cmd_instrument_review)
 
     promotion = sub.add_parser("promotion-status", help="promotion gates and binding constraint")
     promotion.add_argument("--json", action="store_true")

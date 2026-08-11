@@ -12,7 +12,7 @@ command reference, what lands in which table, and — most importantly — a num
 **Known limitations** list that exists to stop you drawing wrong conclusions.
 Do not skip that section.
 
-Decision history is in [`docs/adr/`](docs/adr/) (16 ADRs). The four most
+Decision history is in [`docs/adr/`](docs/adr/) (17 ADRs). The five most
 load-bearing:
 
 - **[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md)** — the
@@ -33,6 +33,10 @@ load-bearing:
   parsing, single points of correction. Anything *not* in
   `tests/fixtures/binance/recorded/` is still unverified — signing, WebSocket
   `markPrice`/`kline` frames, and all rate-limit failure behaviour.
+- **[ADR-0017](docs/adr/0017-content-addressed-instrument-catalog-review.md)** —
+  the Phase-2 fail-closed rule: the latest catalog hash is authoritative, a
+  change returns to `PENDING_REVIEW`, and an older approved version is never a
+  fallback.
 
 Update `docs/STATUS.md` and the relevant README section whenever something lands,
 and write an ADR for any material decision.
@@ -60,13 +64,17 @@ a price the risk engine approved.
 - Binance market data needs **no API key**. `binance-status` and
   `binance-snapshot` work against production read-only out of the box; set
   `BINANCE_ENV=production` to point at it.
+- `sync-instruments` is the only authenticated path. It performs one signed
+  **read-only** `leverageBracket` request; credentials belong in the ignored
+  `.env`, and `BINANCE_API_SECRET_PATH` must name an owner-only file, not a
+  directory. The first authenticated production capture is still pending.
 - Cron drives collection via `scripts/cron-run.sh`; logs in `data/logs/`.
   Nothing is scheduled yet — there are no producers.
 
 ## Verification (all four must pass before committing)
 
 ```bash
-uv run pytest -q          # 425 tests
+uv run pytest -q          # 440 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
