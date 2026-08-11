@@ -6,7 +6,7 @@
 > factual; when work completes, move it from **Backlog** to the relevant phase
 > entry.
 
-_Last updated: 2026-08-11 (Phase 2 complete; exact production hash approved)_
+_Last updated: 2026-08-11 (Phase 3 partial; bounded production ingest verified)_
 
 > Every figure below is a dated snapshot. Run **`dashboard`** for the live
 > operator view — connectivity, kill switches, run history, and promotion-gate
@@ -32,26 +32,31 @@ Locked decisions: funding carry as the edge thesis (ADR-0004), funding-cadence
 decisions (ADR-0005), local-first (ADR-0002), prospective-only promotion gates
 (ADR-0012), venue-environment scoping from day one (ADR-0010), a filtered
 instrument universe (ADR-0016), content-addressed catalog review (ADR-0017).
-Full rationale in `docs/adr/` (18 ADRs).
-**ADRs 0015 and 0018 are the load-bearing venue records** — public and
-authenticated documentation met reality there.
+Full rationale in `docs/adr/` (19 ADRs).
+**ADRs 0015, 0018, and 0019 are the load-bearing venue records** — public REST,
+authenticated REST, and archive documentation met reality there.
 
 ## Current state (one paragraph)
 
-**Phases 0–2 are complete; Phase 3 has not started.**
+**Phases 0–2 are complete; Phase 3 is partial.**
 Phase 0 built the governance surface. Phase 1 added the public read-only Binance
 adapter, raw retention, rate-limit budgeting, and WebSocket gap handling. Phase 2
-adds the signed read-only maintenance-bracket path, exact filter/funding/margin
+added the signed read-only maintenance-bracket path, exact filter/funding/margin
 domain values, canonical SHA-256 catalogs, immutable observations, and
 append-only human review. A changed catalog returns to `PENDING_REVIEW`; it never
-falls back to an older approved hash. 442 tests, ruff and strict mypy clean, two
-Alembic migrations with no drift. The public reconciliation produced seven
+falls back to an older approved hash. Phase 3 now has checksum-verified monthly
+funding/kline archives, independent archive/REST provenance, exact Decimal and
+timestamp persistence, quality assessments, live funding/price collectors, and
+real producer health checks. The public reconciliation produced seven
 findings in ADR-0015; the signed production capture succeeded and its findings
-are recorded in ADR-0018. The resulting 527-specification catalog is `APPROVED`
-under exact hash
+are recorded in ADR-0018; archive reconciliation is in ADR-0019. The resulting
+527-specification catalog is `APPROVED` under exact hash
 `d3a5898667985f09ce7d6ea9e7c0be1b6b759cca499833f8cbbe71687e659787`.
-**There is still no market-data persistence, no model, no risk engine, and no
-code path that can submit an order.** Every promotion gate reads
+The bounded production proof stored 93 July BTC funding settlements plus 744
+USD-M and 744 spot 1h candles, replayed idempotently, recorded a live REST cycle,
+and passed all eight health checks with zero blocked quality assessments.
+**There is still no model, no risk engine, and no code path that can submit an
+order.** Every promotion gate reads
 `UNAVAILABLE`, correctly, because the system has never traded.
 
 ## Specification phases
@@ -64,7 +69,7 @@ hold. No later phase is inferred from an earlier component existing.
 | 0 — Governance and repository foundation | Reproducible env, CI, structured logging, audit controls, mode ladder, ported safety spine | ✅ **Done** |
 | 1 — Read-only Binance integration | REST + WebSocket ingestion, tolerant schemas, raw retention, rate-limit budget, reconnect/gap tests, live-verified against production read-only | ✅ **Done** (ADR-0015) |
 | 2 — Instrument and margin specification | `exchangeInfo` filters, `leverageBracket` tiers, per-symbol funding schedule, versioned and fail-closed on change | ✅ **Done** — signed production capture reconciled and exact catalog hash approved (ADR-0018) |
-| 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | ⬜ Not started |
+| 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | 🟡 **Partial** — implementation + bounded BTC production proof complete; selected full history not yet backfilled (ADR-0019) |
 | 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | ⬜ Not started |
 | 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | ⬜ Not started |
 | 6 — Historical backtester | Leakage-free replay, realistic fill/slippage, funding accrual, benchmark comparison | ⬜ Not started |
@@ -93,27 +98,29 @@ packages/domain/            Pure logic. No framework, DB, or venue imports.
   errors.py                 Domain exception base
 packages/venue_binance/     Read-only venue adapter. No order path exists.
   endpoints.py              Base URLs and paths — one place to correct routing
-  auth.py                   HMAC-SHA256 signing (still unverified live)
+  auth.py                   Live-verified HMAC-SHA256 signed read-only requests
   errors.py                 Status + error-code classification
   rate_limit.py             Weight budget driven by the venue's own headers
   schemas.py                Tolerant wire models (extra=allow)
   mapping.py                Wire to domain; the only place field names matter
   client.py                 REST; public data + signed read-only margin brackets
+  archive.py                Checksum-verified production funding/kline archives
   ws_client.py              Combined-stream consumer, reconnect + gap detection
 packages/config/            Settings (pydantic-settings) + SecretProvider
 packages/storage/           Immutable content-addressed raw-payload store
 packages/observability/     JSON logging with credential redaction
-packages/db/                Audit repos + immutable instrument catalog/reviews
+packages/db/                Audit, catalog, market history, and quality repos
 apps/cli/main.py            Every command; owns the transaction
-migrations/                 Alembic (2 migrations through f47c2c9d48ab)
+migrations/                 Alembic (3 migrations through 62848a719f99)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
-tests/                      440 total: unit + integration + recorded contracts
+scripts/crontab.example     Explicit BTC live-collector/watchdog schedule
+tests/                      476 unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 
 ## Commands
 
-The governance surface plus the Phase-1/2 read-only venue commands.
+The governance surface plus the Phase-1–3 read-only venue/data commands.
 
 | Command | Purpose |
 |---|---|
@@ -122,16 +129,19 @@ The governance surface plus the Phase-1/2 read-only venue commands.
 | `safety-status` | Current scoped kill switches (`--active-only`, `--json`) |
 | `safety-halt` / `safety-clear` | Append a control event (`--scope --key --reason --actor`) |
 | `health-status` | Durable run history and watchdog verdicts |
-| `health-check` | Evaluate scheduled-producer health (`UNAVAILABLE` in Phase 0) |
+| `health-check` | Evaluate funding/price run history and retained REST-artifact freshness |
 | `promotion-status` | Gates and the binding constraint |
 | `binance-status` | Venue connectivity, clock drift, weight budget, universe size |
 | `binance-snapshot` | Fetch public market data and retain every raw byte |
 | `sync-instruments` | Signed read-only sync; version filters, funding, and margin tiers |
 | `instrument-status` | Current exact catalog hash, exclusions, and review status |
 | `instrument-review` | Append APPROVE/REJECT for the exact current catalog hash |
+| `backfill` | Plan or ingest checksum-verified monthly archives over `[start,end)` |
+| `record-funding` | Persist settled funding plus a current mark/index snapshot |
+| `record-prices` | Persist current mark/index and spot/USD-M best books |
+| `market-data-status` | Persisted row/artifact counts, quality blocks, and live freshness |
 
-Planned, each landing in its phase: `backfill`, `record-funding`, `record-prices`,
-`daily-sync`, `carry-scan`, `paper-trade`,
+Planned, each landing in its phase: `daily-sync`, `carry-scan`, `paper-trade`,
 `paper-cycle`, `paper-report`, `reconcile`, `calibration`, `backtest`.
 
 ## Data model
@@ -144,6 +154,12 @@ Planned, each landing in its phase: `backfill`, `record-funding`, `record-prices
 | `instrument_catalog_versions` | Immutable canonical catalogs, unique by environment + SHA-256 | ✅ |
 | `instrument_catalog_observations` | Every sync linked to its retained raw sources | ✅ |
 | `instrument_catalog_review_events` | Append-only exact-hash approvals and rejections | ✅ |
+| `market_data_source_artifacts` | Immutable REST/archive provenance, checksums, ranges, raw keys | ✅ |
+| `funding_rate_observations` | Source-specific settled rates + optional source-native fields | ✅ |
+| `kline_observations` | Source-specific closed exact OHLCV candles | ✅ |
+| `mark_price_snapshots` | Point-in-time mark/index/current-funding snapshots | ✅ |
+| `book_ticker_snapshots` | Spot/USD-M best bid/ask observations | ✅ |
+| `market_data_quality_assessments` | Durable PASS/BLOCKED gap/duplicate/conflict verdicts | ✅ |
 
 Every market-keyed table added later **must** carry `environment` (ADR-0010).
 
@@ -166,15 +182,16 @@ wrong conclusions from the numbers above.
 4. **Rate-limit failure behaviour is unverified.** 429, 418, `Retry-After`, and
    ban duration are all inferred from documentation; the success-path headers are
    recorded.
-5. **Market data is fetched but not persisted.** Phase 1 retains raw bytes to the
-   object store; there are no market-data tables. Those land in Phase 3.
+5. **Phase 3 is not a full-history claim.** Only July 2026 BTC funding and 1h
+   spot/USD-M klines have been production-ingested as a bounded proof. Choose and
+   backfill the complete research range/universe before Phase 3 can be marked done.
 6. **The liquidation-distance invariant is stated, not implemented** (ADR-0009).
    Its promotion gate exists; the risk engine does not. Phase 5.
 7. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
    blocks on `UNKNOWN` because nothing can yet produce `RECONCILED`. Phase 7.
-8. **`health-check` reports `UNAVAILABLE`.** There are still no *scheduled*
-   producers; the venue commands are run by hand. The run-history plumbing
-   beneath it is live and tested.
+8. **The cron file is an example, not installed state.** `health-check` is real
+   and passed after the manual BTC live cycle, but freshness will age out unless
+   `scripts/crontab.example` is installed on exactly one scheduler host.
 9. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
    exists. See ADR-0012 for why a naive construction would read `PASS`.
 10. **Freshness tolerances are still mostly guesses.** The funding tolerance is
@@ -198,10 +215,10 @@ wrong conclusions from the numbers above.
 
 ## Backlog (next increments, roughly ordered)
 
-1. **Phase 3 — archive backfill.** `data.binance.vision` klines + full
-   `fundingRate` history, point-in-time integrity checks, market-data tables.
-2. **Register scheduled producers** in `SCHEDULED_PRODUCERS` and make
-   `health-check` real; add the cron entries.
+1. **Finish Phase 3 history.** Select the research date range/universe, dry-run
+   it in bounded batches, then ingest all required spot/USD-M klines and funding.
+2. **Install the collector schedule** from `scripts/crontab.example` on exactly
+   one host and observe its durable health over wall-clock time.
 3. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
    recorded corpus.
 4. Validate the remaining freshness tolerances (limitation 10) against measured
@@ -214,7 +231,7 @@ wrong conclusions from the numbers above.
 All four must pass before any commit:
 
 ```bash
-uv run pytest -q          # 442 tests
+uv run pytest -q          # 476 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations

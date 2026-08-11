@@ -10,13 +10,14 @@ live capital is stepwise and gated by explicit, testable criteria. When unsure,
 **fail closed** — reject on missing, stale, or ambiguous input rather than
 guessing.
 
-> **Status: Phases 0–2 complete; Phase 3 is next.** The governance surface, a
-> read-only Binance adapter verified against production, and the fail-closed
-> instrument-catalog pipeline are built and tested. The signed
-> `leverageBracket` read succeeded, its real payload is under contract test, and
-> the first 527-specification production catalog is approved by exact hash. There
-> is no market-data persistence, no model, no risk engine, and no code path that
-> can submit an order.
+> **Status: Phases 0–2 complete; Phase 3 is partial.** Checksum-verified monthly
+> archive ingestion, source-aware market-data persistence, live funding/price
+> collectors, and producer health checks are built. A bounded July BTC proof
+> persisted 93 settlements and 1,488 closed candles with zero gaps/conflicts,
+> then passed an idempotent replay and live REST cycle. Phase 3 is not complete
+> until the selected research universe and historical range are fully
+> backfilled. There is no model, no risk engine, and no code path that can submit
+> an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
 
@@ -155,6 +156,13 @@ BINANCE_ENV=production uv run python apps/cli/main.py binance-status
 # After configuring a read-only, IP-restricted key in the ignored `.env`:
 uv run python apps/cli/main.py sync-instruments
 uv run python apps/cli/main.py instrument-status
+
+# Plan first, then ingest only an explicit completed-month range:
+uv run python apps/cli/main.py backfill --dataset funding --market usdm \
+  --symbol BTCUSDT --start 2026-07-01 --end 2026-08-01 --dry-run
+uv run python apps/cli/main.py record-funding --symbol BTCUSDT
+uv run python apps/cli/main.py record-prices --symbol BTCUSDT
+uv run python apps/cli/main.py market-data-status
 ```
 
 Ports are offset from the sibling project's (5432/6379) so both stacks run side
@@ -164,7 +172,7 @@ v1 and will break in confusing ways.
 ### Verification — all four must pass before any commit
 
 ```bash
-uv run pytest -q          # 442 tests
+uv run pytest -q          # 476 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -186,18 +194,20 @@ packages/venue_binance/     Read-only venue adapter; no order path exists
   endpoints/auth/errors     One place each to correct routing, signing, statuses
   schemas.py + mapping.py   Tolerant wire models; the only place fields matter
   client.py                 REST; public data + one signed read-only margin path
+  archive.py                Checksum-verified monthly funding/kline archives
   ws_client.py              Combined streams, reconnect, sequence-gap detection
 packages/config/            Settings + SecretProvider (env and file-backed)
 packages/storage/           Immutable content-addressed raw-payload store
 packages/observability/     JSON logging with credential redaction
-packages/db/                Audit spine + immutable catalog/review repositories
+packages/db/                Audit spine + catalog and source-aware market history
 apps/cli/main.py            Every command; owns the transaction
 ```
 
 Commands: `dashboard`, `status`, `safety-status`, `safety-halt`, `safety-clear`,
 `health-status`, `health-check`, `promotion-status`, `binance-status`,
 `binance-snapshot`, `sync-instruments`, `instrument-status`, and
-`instrument-review`. Full table and the planned commands in
+`instrument-review`, `backfill`, `record-funding`, `record-prices`, and
+`market-data-status`. Full table and the planned commands in
 [`docs/STATUS.md`](docs/STATUS.md).
 
 ## Conventions that apply to every future change
@@ -227,7 +237,7 @@ Commands: `dashboard`, `status`, `safety-status`, `safety-halt`, `safety-clear`,
 |---|---|
 | [`docs/STATUS.md`](docs/STATUS.md) | **Start here.** Current state, phases, commands, known limitations, backlog |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement for AI sessions picking this up cold |
-| [`docs/adr/`](docs/adr/) | 18 ADRs — why the system is shaped this way. **ADR-0015** records public first contact; **ADR-0018** records authenticated first contact |
+| [`docs/adr/`](docs/adr/) | 19 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, and **ADR-0019** record REST, authenticated, and archive first contact |
 | [`tests/fixtures/binance/`](tests/fixtures/binance/) | Recorded venue responses, and an honest list of what is still unverified |
 | [`docs/founding-readme.md`](docs/founding-readme.md) | The original specification, archived verbatim |
 
@@ -235,6 +245,8 @@ Commands: `dashboard`, `status`, `safety-status`, `safety-halt`, `safety-clear`,
 
 - **Run one scheduler at a time.** Two hosts writing the same database both
   append evidence and double-count accrual.
+- Start from `scripts/crontab.example`; replace its absolute path and install it
+  only on that scheduler host.
 - **Set the host clock to UTC.**
 - **Brazilian record-keeping.** Trading on Binance.com from Brazil carries
   reporting obligations to the Receita Federal. Design the ledger to export

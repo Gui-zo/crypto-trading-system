@@ -15,7 +15,7 @@ Three rules hold throughout:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from domain.instrument import (
@@ -59,20 +59,20 @@ def _require(value: str | int | Decimal | None, field: str, symbol: str) -> Deci
         raise MappingError(f"{symbol}: field {field!r} is not a valid decimal: {value!r}") from exc
 
 
-def _optional(
-    value: str | int | Decimal | None, field: str, symbol: str
-) -> Decimal | None:
+def _optional(value: str | int | Decimal | None, field: str, symbol: str) -> Decimal | None:
     return None if value is None else _require(value, field, symbol)
 
 
 def to_utc(epoch_millis: int | None, field: str, symbol: str) -> datetime:
     if epoch_millis is None:
         raise MappingError(f"{symbol}: required timestamp {field!r} is absent")
-    return datetime.fromtimestamp(epoch_millis / 1000, tz=UTC)
+    if epoch_millis < 0:
+        raise MappingError(f"{symbol}: timestamp {field!r} cannot be negative")
+    return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=epoch_millis)
 
 
 def to_utc_optional(epoch_millis: int | None) -> datetime | None:
-    return None if epoch_millis is None else datetime.fromtimestamp(epoch_millis / 1000, tz=UTC)
+    return None if epoch_millis is None else to_utc(epoch_millis, "optional_time", "unknown")
 
 
 def to_mark_price(

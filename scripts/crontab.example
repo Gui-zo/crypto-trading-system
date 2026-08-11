@@ -1,0 +1,10 @@
+# Install only on the one host that owns scheduling for this database.
+# Replace the path before using `crontab scripts/crontab.example`.
+SHELL=/bin/bash
+CRYPTO_TRADING_REPO=/absolute/path/to/crypto-trading-system
+
+# Current explicitly selected research symbol. Add a symbol only after it is in
+# the exact APPROVED catalog and its archive history has passed quality checks.
+* * * * * $CRYPTO_TRADING_REPO/scripts/cron-run.sh record-prices --symbol BTCUSDT
+7,37 * * * * $CRYPTO_TRADING_REPO/scripts/cron-run.sh record-funding --symbol BTCUSDT --limit 10
+* * * * * $CRYPTO_TRADING_REPO/scripts/cron-run.sh health-check

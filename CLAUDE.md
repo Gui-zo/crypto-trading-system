@@ -12,7 +12,7 @@ command reference, what lands in which table, and — most importantly — a num
 **Known limitations** list that exists to stop you drawing wrong conclusions.
 Do not skip that section.
 
-Decision history is in [`docs/adr/`](docs/adr/) (17 ADRs). The five most
+Decision history is in [`docs/adr/`](docs/adr/) (19 ADRs). The six most
 load-bearing:
 
 - **[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md)** — the
@@ -31,12 +31,16 @@ load-bearing:
 - **[ADR-0003](docs/adr/0003-binance-schemas-synthetic-until-recorded.md)** —
   the discipline that made ADR-0015 cheap: tolerant parsing, raw retention before
   parsing, single points of correction. Anything *not* in
-  `tests/fixtures/binance/recorded/` is still unverified — signing, WebSocket
-  `markPrice`/`kline` frames, and all rate-limit failure behaviour.
+  `tests/fixtures/binance/recorded/` is still unverified — notably WebSocket
+  `markPrice`/`kline` frames and all rate-limit failure behaviour.
 - **[ADR-0017](docs/adr/0017-content-addressed-instrument-catalog-review.md)** —
   the Phase-2 fail-closed rule: the latest catalog hash is authoritative, a
   change returns to `PENDING_REVIEW`, and an older approved version is never a
   fallback.
+- **[ADR-0019](docs/adr/0019-checksum-verified-source-aware-market-history.md)** —
+  archive URLs are replaceable, archive/REST schemas differ, and live freshness
+  follows retained REST artifacts rather than historical rows. Read it before
+  changing backfill, canonical series, or producer health.
 
 Update `docs/STATUS.md` and the relevant README section whenever something lands,
 and write an ADR for any material decision.
@@ -67,14 +71,15 @@ a price the risk engine approved.
 - `sync-instruments` is the only authenticated path. It performs one signed
   **read-only** `leverageBracket` request; credentials belong in the ignored
   `.env`, and `BINANCE_API_SECRET_PATH` must name an owner-only file, not a
-  directory. The first authenticated production capture is still pending.
+  directory. The first authenticated production capture succeeded on 2026-08-11.
 - Cron drives collection via `scripts/cron-run.sh`; logs in `data/logs/`.
-  Nothing is scheduled yet — there are no producers.
+  `scripts/crontab.example` defines the explicit BTC collectors and watchdog but
+  is not proof that a host crontab has been installed.
 
 ## Verification (all four must pass before committing)
 
 ```bash
-uv run pytest -q          # 440 tests
+uv run pytest -q          # 476 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -118,6 +123,9 @@ scope the query to a row you created. This bit the sibling repo repeatedly.
   `schemas.py` + `mapping.py`. That is what makes a first-contact fix small.
 - **Raw bytes are retained before parsing**, so a payload that breaks the parser
   is the one you still have. Keys are environment-scoped.
+- Archive ZIPs and their checksum sidecars are retained by verified content
+  hash. Archive and REST observations stay source-specific and merge only on
+  exact agreement; missing source-native fields are never fabricated.
 - Contract tests parse the **recorded** payloads in
   `tests/fixtures/binance/recorded/`. If you change a schema and they fail, the
   venue is right and you are wrong. Re-record with `binance-snapshot`.

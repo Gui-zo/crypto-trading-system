@@ -1,13 +1,14 @@
 # Binance fixtures
 
-## `recorded/` — real responses, captured 2026-08-09 and 2026-08-11
+## `recorded/` — real responses and archive rows, captured 2026-08-09 and 2026-08-11
 
-These are **genuine responses** from Binance production (`fapi.binance.com`,
-`api.binance.com`) and testnet (`testnet.binancefuture.com`). Most were captured
-unauthenticated over public market-data endpoints on 2026-08-09; the successful
-signed, read-only `leverageBracket` response was captured on 2026-08-11. They are
-the corpus ADR-0003 demands: contract tests parse *these*, not hand-written
-guesses.
+These are **genuine responses and CSV rows** from Binance production
+(`fapi.binance.com`, `api.binance.com`, `data.binance.vision`) and testnet
+(`testnet.binancefuture.com`). Most REST responses were captured unauthenticated
+over public market-data endpoints on 2026-08-09; the successful signed,
+read-only `leverageBracket` response and public-archive first contact were
+captured on 2026-08-11. They are the corpus ADR-0003 demands: contract tests
+parse *these*, not hand-written guesses.
 
 | File | Endpoint | Notes |
 |---|---|---|
@@ -23,12 +24,16 @@ guesses.
 | `fapi_klines.json` | `GET /fapi/v1/klines?symbol=BTCUSDT&interval=8h&limit=2` | Array-of-arrays, positional |
 | `fapi_error_invalid_symbol.json` | `GET /fapi/v1/premiumIndex?symbol=NOSUCHPAIR` | HTTP 400 |
 | `fapi_error_bad_api_key.json` | `GET /fapi/v1/leverageBracket?symbol=BTCUSDT` | HTTP 401 — endpoint is **not** public |
+| `archive_fundingRate_BTCUSDT_2026-07.trimmed.csv` | monthly USD-M `fundingRate` archive | **Trimmed** to 4 of 93 rows; headered; carries historical interval |
+| `archive_futures_klines_BTCUSDT_1h_2026-07.trimmed.csv` | monthly USD-M `klines` archive | **Trimmed** to 3 of 744 rows; headered; millisecond timestamps |
+| `archive_spot_klines_BTCUSDT_1h_2026-07.trimmed.csv` | monthly spot `klines` archive | **Trimmed** to 3 of 744 rows; headerless; microsecond timestamps |
 
-**Three files are trimmed** (`.trimmed.json` in the name) because the originals
-are large. The public fixtures select the two symbols we care about, one of each
-non-`TRADING` status, and one tokenised-equity contract. The authenticated fixture
-selects a 12-tier liquid symbol and a 4-tier long-tail symbol, preserving the
-observed tier-count range. The envelope around each trimmed list is unmodified.
+The `.trimmed.*` files select representative rows from large responses. The
+public REST fixtures select the two symbols we care about, one of each
+non-`TRADING` status, and one tokenised-equity contract. The authenticated
+fixture selects a 12-tier liquid symbol and a 4-tier long-tail symbol, preserving
+the observed tier-count range. Archive fixtures preserve rows byte-for-byte but
+not the full monthly file; full ZIPs and checksums live in the ignored raw store.
 
 Nothing else in this directory has been edited. If a field looks wrong, it is
 what the venue actually sent.
@@ -48,6 +53,8 @@ Per ADR-0003, anything not in `recorded/` is **unverified**:
   and IP-ban semantics. The success-path headers are recorded; the failure path
   is inferred from documentation.
 
-Re-record public fixtures with
+Re-record REST fixtures with
 `uv run python apps/cli/main.py binance-snapshot --out <dir>` and the signed
-catalog inputs with `uv run python apps/cli/main.py sync-instruments`.
+catalog inputs with `uv run python apps/cli/main.py sync-instruments`. Re-record
+archive evidence through a bounded `backfill --start ... --end ...`; never copy
+an unverified ZIP into the corpus.

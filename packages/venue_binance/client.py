@@ -104,9 +104,7 @@ class BinanceRestClient:
         self._http = http
         self._raw_store = raw_store
         self._signer = signer
-        self._budget = budget or RateLimitBudget(
-            limit_per_minute=FALLBACK_WEIGHT_LIMIT_PER_MINUTE
-        )
+        self._budget = budget or RateLimitBudget(limit_per_minute=FALLBACK_WEIGHT_LIMIT_PER_MINUTE)
         self._endpoints = BinanceEndpoints(environment)
         self._scope = VenueScope(venue=VENUE_CODE, environment=environment)
 
@@ -306,14 +304,27 @@ class BinanceRestClient:
         )
 
     async def funding_history(
-        self, symbol: str, *, limit: int = 100
+        self,
+        symbol: str,
+        *,
+        limit: int = 100,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
     ) -> Response[list[FundingRateObservation]]:
         if not 0 < limit <= 1000:
             raise ValueError("funding history limit must be in (0, 1000]")
+        params: list[tuple[str, str | int]] = [("symbol", symbol.upper())]
+        if start_time is not None:
+            params.append(("startTime", _epoch_millis(start_time, "start_time")))
+        if end_time is not None:
+            params.append(("endTime", _epoch_millis(end_time, "end_time")))
+        if start_time is not None and end_time is not None and end_time < start_time:
+            raise ValueError("funding-history end_time must not precede start_time")
+        params.append(("limit", limit))
         payload, raw, weight = await self._get(
             Market.USDM,
             "fundingRate",
-            (("symbol", symbol.upper()), ("limit", limit)),
+            params,
         )
         if not isinstance(payload, list):
             raise BinanceTransportError("fundingRate: expected a JSON array")
@@ -354,7 +365,14 @@ class BinanceRestClient:
         )
 
     async def klines(
-        self, symbol: str, *, interval: str, limit: int = 500, market: Market = Market.USDM
+        self,
+        symbol: str,
+        *,
+        interval: str,
+        limit: int = 500,
+        market: Market = Market.USDM,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
     ) -> Response[list[Kline]]:
         """Candles, **with the still-forming final candle dropped**.
 
@@ -362,25 +380,44 @@ class BinanceRestClient:
         look-ahead bias, and it is the single easiest way to make a backtest look
         brilliant, so it is removed here rather than left to every caller.
         """
+        if not 0 < limit <= 1500:
+            raise ValueError("kline limit must be in (0, 1500]")
+        params: list[tuple[str, str | int]] = [
+            ("symbol", symbol.upper()),
+            ("interval", interval),
+        ]
+        if start_time is not None:
+            params.append(("startTime", _epoch_millis(start_time, "start_time")))
+        if end_time is not None:
+            params.append(("endTime", _epoch_millis(end_time, "end_time")))
+        if start_time is not None and end_time is not None and end_time < start_time:
+            raise ValueError("kline end_time must not precede start_time")
+        params.append(("limit", limit))
         payload, raw, weight = await self._get(
             market,
             "klines",
-            (("symbol", symbol.upper()), ("interval", interval), ("limit", limit)),
+            params,
         )
         if not isinstance(payload, list):
             raise BinanceTransportError("klines: expected a JSON array")
         instrument = self.instrument(symbol, market)
         collected_at = datetime.now(UTC)
-        closed = payload[:-1] if payload else []
-        return Response(
-            value=[
-                mapping.to_kline(row, instrument=instrument, collected_at=collected_at)
-                for row in closed
-                if isinstance(row, list)
-            ],
-            raw=raw,
-            weight=weight,
-        )
+        closed: list[Kline] = []
+        for row in payload:
+            if not isinstance(row, list):
+                continue
+            kline = mapping.to_kline(row, instrument=instrument, collected_at=collected_at)
+            if kline.close_time < collected_at:
+                closed.append(kline)
+        return Response(value=closed, raw=raw, weight=weight)
+
+
+def _epoch_millis(value: datetime, field: str) -> int:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field} must be timezone-aware")
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = value.astimezone(UTC) - epoch
+    return delta.days * 86_400_000 + delta.seconds * 1000 + delta.microseconds // 1000
 
 
 def _error_body(content: bytes) -> tuple[int | None, str]:

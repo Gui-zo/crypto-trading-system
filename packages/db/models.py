@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
@@ -33,6 +34,7 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -257,4 +259,301 @@ class InstrumentCatalogReviewEventRecord(Base):
     action: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str] = mapped_column(Text)
     actor: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MarketDataSourceArtifactRecord(Base):
+    """One immutable retained REST response or checksum-verified archive object."""
+
+    __tablename__ = "market_data_source_artifacts"
+    __table_args__ = (
+        UniqueConstraint("environment", "raw_key"),
+        UniqueConstraint("id", "environment"),
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("source_type IN ('ARCHIVE', 'REST')", name="valid_source_type"),
+        CheckConstraint(
+            "dataset IN ('funding_rate', 'kline', 'mark_price', 'book_ticker')",
+            name="valid_dataset",
+        ),
+        CheckConstraint("market IN ('spot', 'usdm')", name="valid_market"),
+        CheckConstraint("length(symbol) > 0", name="nonempty_symbol"),
+        CheckConstraint("length(source_url) > 0", name="nonempty_source_url"),
+        CheckConstraint("length(raw_key) > 0", name="nonempty_raw_key"),
+        CheckConstraint("length(raw_sha256) = 64", name="valid_raw_sha256"),
+        CheckConstraint("raw_size > 0", name="positive_raw_size"),
+        CheckConstraint(
+            "(dataset = 'kline' AND interval IS NOT NULL) OR "
+            "(dataset <> 'kline' AND interval IS NULL)",
+            name="interval_only_for_klines",
+        ),
+        CheckConstraint(
+            "(source_type = 'ARCHIVE' AND checksum_key IS NOT NULL AND "
+            "checksum_sha256 IS NOT NULL AND expected_payload_sha256 = raw_sha256 AND "
+            "period_start IS NOT NULL AND period_end IS NOT NULL AND period_end > period_start) OR "
+            "(source_type = 'REST' AND checksum_key IS NULL AND checksum_sha256 IS NULL AND "
+            "expected_payload_sha256 IS NULL AND period_start IS NULL AND period_end IS NULL)",
+            name="source_specific_provenance",
+        ),
+        CheckConstraint(
+            "checksum_sha256 IS NULL OR length(checksum_sha256) = 64",
+            name="valid_checksum_sha256",
+        ),
+        CheckConstraint(
+            "expected_payload_sha256 IS NULL OR length(expected_payload_sha256) = 64",
+            name="valid_expected_payload_sha256",
+        ),
+        Index(
+            "ix_market_data_source_artifacts_lookup",
+            "environment",
+            "dataset",
+            "market",
+            "symbol",
+            "fetched_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    source_type: Mapped[str] = mapped_column(String(16))
+    dataset: Mapped[str] = mapped_column(String(32))
+    market: Mapped[str] = mapped_column(String(16))
+    symbol: Mapped[str] = mapped_column(String(64))
+    interval: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_url: Mapped[str] = mapped_column(Text)
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_key: Mapped[str] = mapped_column(Text)
+    raw_sha256: Mapped[str] = mapped_column(String(64))
+    raw_size: Mapped[int] = mapped_column(BigInteger)
+    checksum_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expected_payload_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FundingRateObservationRecord(Base):
+    """One immutable settled funding fact from one independently retained source."""
+
+    __tablename__ = "funding_rate_observations"
+    __table_args__ = (
+        UniqueConstraint("environment", "symbol", "funding_time", "source_type"),
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("source_type IN ('ARCHIVE', 'REST')", name="valid_source_type"),
+        CheckConstraint("length(symbol) > 0", name="nonempty_symbol"),
+        CheckConstraint("mark_price IS NULL OR mark_price > 0", name="positive_mark_price"),
+        CheckConstraint(
+            "interval_hours IS NULL OR (interval_hours > 0 AND MOD(24, interval_hours) = 0)",
+            name="valid_interval_hours",
+        ),
+        ForeignKeyConstraint(
+            ("source_artifact_id", "environment"),
+            ("market_data_source_artifacts.id", "market_data_source_artifacts.environment"),
+        ),
+        Index(
+            "ix_funding_rate_observations_series",
+            "environment",
+            "symbol",
+            "funding_time",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    symbol: Mapped[str] = mapped_column(String(64))
+    funding_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    funding_rate: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    mark_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    interval_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(16))
+    source_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KlineObservationRecord(Base):
+    """One closed OHLCV candle from archive or REST."""
+
+    __tablename__ = "kline_observations"
+    __table_args__ = (
+        UniqueConstraint("environment", "market", "symbol", "interval", "open_time", "source_type"),
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("market IN ('spot', 'usdm')", name="valid_market"),
+        CheckConstraint("source_type IN ('ARCHIVE', 'REST')", name="valid_source_type"),
+        CheckConstraint("length(symbol) > 0", name="nonempty_symbol"),
+        CheckConstraint("length(interval) > 0", name="nonempty_interval"),
+        CheckConstraint("close_time > open_time", name="ordered_times"),
+        CheckConstraint(
+            "open_price > 0 AND high_price > 0 AND low_price > 0 AND close_price > 0",
+            name="positive_prices",
+        ),
+        CheckConstraint(
+            "high_price >= open_price AND high_price >= close_price AND high_price >= low_price",
+            name="valid_high",
+        ),
+        CheckConstraint(
+            "low_price <= open_price AND low_price <= close_price AND low_price <= high_price",
+            name="valid_low",
+        ),
+        CheckConstraint("volume >= 0 AND quote_volume >= 0", name="nonnegative_volumes"),
+        CheckConstraint("trades >= 0", name="nonnegative_trades"),
+        ForeignKeyConstraint(
+            ("source_artifact_id", "environment"),
+            ("market_data_source_artifacts.id", "market_data_source_artifacts.environment"),
+        ),
+        Index(
+            "ix_kline_observations_series",
+            "environment",
+            "market",
+            "symbol",
+            "interval",
+            "open_time",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    market: Mapped[str] = mapped_column(String(16))
+    symbol: Mapped[str] = mapped_column(String(64))
+    interval: Mapped[str] = mapped_column(String(16))
+    open_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    close_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    open_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    high_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    low_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    close_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    volume: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    quote_volume: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    trades: Mapped[int] = mapped_column(BigInteger)
+    source_type: Mapped[str] = mapped_column(String(16))
+    source_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MarkPriceSnapshotRecord(Base):
+    """One point-in-time mark/index/current-funding observation."""
+
+    __tablename__ = "mark_price_snapshots"
+    __table_args__ = (
+        UniqueConstraint("environment", "symbol", "venue_time"),
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("length(symbol) > 0", name="nonempty_symbol"),
+        CheckConstraint("mark_price > 0 AND index_price > 0", name="positive_prices"),
+        CheckConstraint(
+            "estimated_settle_price IS NULL OR estimated_settle_price > 0",
+            name="positive_estimated_settle_price",
+        ),
+        ForeignKeyConstraint(
+            ("source_artifact_id", "environment"),
+            ("market_data_source_artifacts.id", "market_data_source_artifacts.environment"),
+        ),
+        Index("ix_mark_price_snapshots_series", "environment", "symbol", "venue_time"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    symbol: Mapped[str] = mapped_column(String(64))
+    venue_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    mark_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    index_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    last_funding_rate: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    interest_rate: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    next_funding_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    estimated_settle_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    source_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BookTickerSnapshotRecord(Base):
+    """One retained spot or USD-M best-bid/ask observation."""
+
+    __tablename__ = "book_ticker_snapshots"
+    __table_args__ = (
+        UniqueConstraint("source_artifact_id"),
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("market IN ('spot', 'usdm')", name="valid_market"),
+        CheckConstraint("length(symbol) > 0", name="nonempty_symbol"),
+        CheckConstraint("bid_price > 0 AND ask_price > 0", name="positive_prices"),
+        CheckConstraint("bid_quantity >= 0 AND ask_quantity >= 0", name="nonnegative_quantities"),
+        CheckConstraint("bid_price < ask_price", name="uncrossed_book"),
+        ForeignKeyConstraint(
+            ("source_artifact_id", "environment"),
+            ("market_data_source_artifacts.id", "market_data_source_artifacts.environment"),
+        ),
+        Index(
+            "ix_book_ticker_snapshots_series",
+            "environment",
+            "market",
+            "symbol",
+            "collected_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    market: Mapped[str] = mapped_column(String(16))
+    symbol: Mapped[str] = mapped_column(String(64))
+    bid_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    bid_quantity: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    ask_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    ask_quantity: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    venue_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_update_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MarketDataQualityAssessmentRecord(Base):
+    """Append-only coverage and integrity verdict for one retained source object."""
+
+    __tablename__ = "market_data_quality_assessments"
+    __table_args__ = (
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("status IN ('PASS', 'BLOCKED')", name="valid_status"),
+        CheckConstraint("source_type IN ('ARCHIVE', 'REST')", name="valid_source_type"),
+        CheckConstraint("dataset IN ('funding_rate', 'kline')", name="valid_dataset"),
+        CheckConstraint("market IN ('spot', 'usdm')", name="valid_market"),
+        CheckConstraint(
+            "row_count >= 0 AND inserted_count >= 0 AND existing_count >= 0 AND "
+            "duplicate_count >= 0 AND gap_count >= 0 AND conflict_count >= 0",
+            name="nonnegative_counts",
+        ),
+        ForeignKeyConstraint(
+            ("source_artifact_id", "environment"),
+            ("market_data_source_artifacts.id", "market_data_source_artifacts.environment"),
+        ),
+        Index(
+            "ix_market_data_quality_assessments_lookup",
+            "environment",
+            "dataset",
+            "market",
+            "symbol",
+            "evaluated_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    source_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    source_type: Mapped[str] = mapped_column(String(16))
+    dataset: Mapped[str] = mapped_column(String(32))
+    market: Mapped[str] = mapped_column(String(16))
+    symbol: Mapped[str] = mapped_column(String(64))
+    interval: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    range_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    range_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16))
+    row_count: Mapped[int] = mapped_column(Integer)
+    inserted_count: Mapped[int] = mapped_column(Integer)
+    existing_count: Mapped[int] = mapped_column(Integer)
+    duplicate_count: Mapped[int] = mapped_column(Integer)
+    gap_count: Mapped[int] = mapped_column(Integer)
+    conflict_count: Mapped[int] = mapped_column(Integer)
+    details_json: Mapped[dict[str, object]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

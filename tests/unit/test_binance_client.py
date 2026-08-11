@@ -9,6 +9,7 @@ sends.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from venue_binance.errors import (
 from venue_binance.rate_limit import RateLimitBudget, RateLimitExceeded
 
 RECORDED = Path(__file__).resolve().parents[1] / "fixtures" / "binance" / "recorded"
+
 
 def recorded(name: str) -> bytes:
     return (RECORDED / name).read_bytes()
@@ -54,9 +56,7 @@ def handler(
 ) -> httpx.MockTransport:
     def respond(request: httpx.Request) -> httpx.Response:
         if body is not None or status != 200:
-            return httpx.Response(
-                status, content=body or b"{}", headers=headers or {}
-            )
+            return httpx.Response(status, content=body or b"{}", headers=headers or {})
         name = ROUTES.get(request.url.path)
         if name is None:
             return httpx.Response(404, json={"code": -1121, "msg": "Invalid path."})
@@ -116,13 +116,19 @@ async def test_book_ticker_works_for_both_markets() -> None:
 
 
 async def test_the_still_forming_final_candle_is_dropped() -> None:
-    """Look-ahead prevention: Binance's last kline is the candle in progress.
-
-    The recorded fixture holds two rows; one is still forming, so one survives.
-    """
-    response = await client(handler()).klines("BTCUSDT", interval="8h", limit=2)
+    """Look-ahead prevention is based on close time, not list position."""
+    payload = json.loads(recorded("fapi_klines.json"))
+    payload[-1][6] = 4_102_444_799_999  # 2099-12-31T23:59:59.999Z
+    response = await client(handler(body=json.dumps(payload).encode())).klines(
+        "BTCUSDT", interval="8h", limit=2
+    )
     assert len(response.value) == 1
     assert response.value[0].is_closed
+
+
+async def test_a_historical_final_candle_is_not_blindly_dropped() -> None:
+    response = await client(handler()).klines("BTCUSDT", interval="8h", limit=2)
+    assert len(response.value) == 2
 
 
 async def test_clock_drift_is_measured_against_venue_time() -> None:
@@ -278,6 +284,51 @@ async def test_a_non_json_error_body_does_not_mask_the_status() -> None:
 async def test_an_out_of_range_funding_limit_is_refused_locally() -> None:
     with pytest.raises(ValueError, match="limit must be in"):
         await client(handler()).funding_history("BTCUSDT", limit=5000)
+
+
+async def test_historical_range_parameters_are_exact_epoch_milliseconds() -> None:
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        fixture = (
+            "fapi_fundingRate.json"
+            if request.url.path.endswith("fundingRate")
+            else "fapi_klines.json"
+        )
+        return httpx.Response(200, content=recorded(fixture))
+
+    api = client(httpx.MockTransport(respond))
+    start = datetime(2026, 7, 1, 0, 0, 0, 123456, tzinfo=UTC)
+    end = datetime(2026, 7, 2, 0, 0, 0, 987654, tzinfo=UTC)
+    await api.funding_history("BTCUSDT", start_time=start, end_time=end, limit=1000)
+    await api.klines(
+        "BTCUSDT",
+        interval="1h",
+        start_time=start,
+        end_time=end,
+        limit=1500,
+    )
+
+    assert seen[0].url.params["startTime"] == "1782864000123"
+    assert seen[0].url.params["endTime"] == "1782950400987"
+    assert seen[0].url.params["limit"] == "1000"
+    assert seen[1].url.params["startTime"] == "1782864000123"
+    assert seen[1].url.params["endTime"] == "1782950400987"
+    assert seen[1].url.params["limit"] == "1500"
+
+
+async def test_historical_ranges_require_aware_ordered_times() -> None:
+    api = client(handler())
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await api.funding_history("BTCUSDT", start_time=datetime(2026, 7, 1), limit=1)
+    with pytest.raises(ValueError, match="must not precede"):
+        await api.klines(
+            "BTCUSDT",
+            interval="1h",
+            start_time=datetime(2026, 7, 2, tzinfo=UTC),
+            end_time=datetime(2026, 7, 1, tzinfo=UTC),
+        )
 
 
 # ---------------------------------------------------------------------------

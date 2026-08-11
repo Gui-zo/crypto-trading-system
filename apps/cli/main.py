@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import pathlib
@@ -31,7 +32,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 # Make the `packages/` code importable when run as a plain script.
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -48,9 +49,15 @@ from db.instrument_repo import (  # noqa: E402
     CatalogSourceArtifact,
     InstrumentCatalogRepository,
 )
+from db.market_data_repo import (  # noqa: E402
+    DataQualityStatus,
+    MarketDataArtifact,
+    MarketDataRepository,
+)
 from db.operational_health_repo import OperationalHealthRepository  # noqa: E402
 from db.safety_repo import SafetyControlRepository  # noqa: E402
 from domain.instrument import InstrumentReviewAction, VenueEnvironment  # noqa: E402
+from domain.market_data import MarketDataSource  # noqa: E402
 from domain.modes import TradingMode, is_live, permits_new_orders  # noqa: E402
 from domain.operational_health import OperationalJobStatus  # noqa: E402
 from domain.promotion import (  # noqa: E402
@@ -69,10 +76,20 @@ from domain.promotion import (  # noqa: E402
 )
 from domain.safety import (  # noqa: E402
     SafetyControlAction,
+    SafetyGateStatus,
     SafetyScope,
+    SafetyScopeRef,
 )
 from observability.logging import configure_logging  # noqa: E402
 from storage.raw_store import create_raw_store  # noqa: E402
+from venue_binance.archive import (  # noqa: E402
+    ArchiveDataset,
+    ArchivePayload,
+    BinanceArchiveClient,
+    monthly_requests,
+    parse_funding_csv,
+    parse_kline_csv,
+)
 from venue_binance.auth import BinanceSigner  # noqa: E402
 from venue_binance.client import BinanceRestClient, create_http_client  # noqa: E402
 from venue_binance.endpoints import Market  # noqa: E402
@@ -81,11 +98,8 @@ from venue_binance.mapping import is_carry_candidate, to_instrument_catalog  # n
 
 log = logging.getLogger("cli")
 
-#: Scheduled producers whose health the watchdog evaluates. Empty through Phase 2 —
-#: no persistent collector exists yet — and deliberately not stubbed: a fabricated signal
-#: that always passes is worse than an honest "nothing to watch". Phase 3
-#: registers `record-funding` and `record-prices` here.
-SCHEDULED_PRODUCERS: tuple[str, ...] = ()
+#: Phase-3 persistent collectors evaluated by the watchdog.
+SCHEDULED_PRODUCERS: tuple[str, ...] = ("record-funding", "record-prices")
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +243,10 @@ async def cmd_safety_status(settings: Settings, args: argparse.Namespace) -> int
         for state in states
     ]
     if args.json:
-        _print({"environment": settings.binance_env.value, "events": total, "controls": rows},
-               as_json=True)
+        _print(
+            {"environment": settings.binance_env.value, "events": total, "controls": rows},
+            as_json=True,
+        )
     else:
         print(f"environment {settings.binance_env.value}   events {total}")
         if not rows:
@@ -284,8 +300,39 @@ async def cmd_health_check(settings: Settings, args: argparse.Namespace) -> int:
         print("             the run history behind this command is live — see health-status")
         return 0
 
-    async def body(session: AsyncSession) -> int:  # pragma: no cover - Phase 1
-        raise NotImplementedError("register producers in SCHEDULED_PRODUCERS first")
+    async def body(session: AsyncSession) -> int:
+        evaluated_at = datetime.now(UTC)
+        market_data = MarketDataRepository(session, environment=settings.binance_env.value)
+        health = OperationalHealthRepository(session, environment=settings.binance_env.value)
+        funding = await health.build_signal(
+            name="funding-series",
+            job_name="record-funding",
+            scope_ref=SafetyScopeRef(SafetyScope.DATA_PROVIDER, "BINANCE_FUNDING"),
+            evaluated_at=evaluated_at,
+            artifact_at=await market_data.latest_funding_at(),
+            maximum_age=timedelta(hours=1),
+            failure_threshold=3,
+            maximum_runtime=timedelta(minutes=20),
+        )
+        prices = await health.build_signal(
+            name="price-series",
+            job_name="record-prices",
+            scope_ref=SafetyScopeRef(SafetyScope.DATA_PROVIDER, "BINANCE_PRICES"),
+            evaluated_at=evaluated_at,
+            artifact_at=await market_data.latest_prices_at(),
+            maximum_age=timedelta(minutes=5),
+            failure_threshold=3,
+            maximum_runtime=timedelta(minutes=20),
+        )
+        assessment = await health.evaluate_and_record(
+            signals=(funding, prices),
+            evaluated_at=evaluated_at,
+            trigger_job_run_id=None,
+        )
+        print(f"{assessment.status.value}  checks={len(assessment.checks)}")
+        for check in assessment.checks:
+            print(f"  {check.status.value:5} {check.name}  {check.detail}")
+        return 0 if assessment.status is SafetyGateStatus.PASS else 1
 
     return await _run_audited(settings, job_name="health-check", argv=sys.argv[1:], body=body)
 
@@ -434,9 +481,7 @@ async def cmd_binance_snapshot(settings: Settings, args: argparse.Namespace) -> 
             )
         return 0
 
-    return await _run_audited(
-        settings, job_name="binance-snapshot", argv=sys.argv[1:], body=body
-    )
+    return await _run_audited(settings, job_name="binance-snapshot", argv=sys.argv[1:], body=body)
 
 
 # ---------------------------------------------------------------------------
@@ -594,10 +639,7 @@ async def cmd_instrument_review(settings: Settings, args: argparse.Namespace) ->
             actor=args.actor,
             reason=args.reason,
         )
-        print(
-            f"{action.value} catalog={status.content_sha256} "
-            f"status={status.review_status.value}"
-        )
+        print(f"{action.value} catalog={status.content_sha256} status={status.review_status.value}")
         return 0
 
     return await _run_audited(
@@ -606,6 +648,342 @@ async def cmd_instrument_review(settings: Settings, args: argparse.Namespace) ->
         argv=sys.argv[1:],
         body=body,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 market-data archive and live series
+# ---------------------------------------------------------------------------
+
+
+async def _approved_specifications(
+    session: AsyncSession, settings: Settings
+) -> dict[str, dict[str, object]]:
+    catalog = InstrumentCatalogRepository(session, environment=settings.binance_env.value)
+    status = await catalog.current_status()
+    if status is None or status.review_status.value != "APPROVED":
+        raise RuntimeError("current exact instrument catalog must be APPROVED")
+    raw = status.catalog.get("specifications")
+    if not isinstance(raw, list):
+        raise RuntimeError("approved instrument catalog has no specification list")
+    specifications: dict[str, dict[str, object]] = {}
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("symbol"), str):
+            raise RuntimeError("approved instrument catalog contains an invalid specification")
+        symbol = item["symbol"].strip().upper()
+        specifications[symbol] = item
+    return specifications
+
+
+def _selected_symbols(
+    args: argparse.Namespace, specifications: dict[str, dict[str, object]]
+) -> tuple[str, ...]:
+    selected = tuple(sorted(specifications)) if args.all_approved else tuple(args.symbol or ())
+    normalized = tuple(
+        dict.fromkeys(symbol.strip().upper() for symbol in selected if symbol.strip())
+    )
+    if not normalized:
+        raise ValueError("at least one symbol is required")
+    outside = sorted(set(normalized) - set(specifications))
+    if outside:
+        raise ValueError(
+            "symbols are outside the current approved carry universe: " + ", ".join(outside)
+        )
+    return normalized
+
+
+def _rest_artifact(
+    response: object,
+    *,
+    dataset: str,
+    market: Market,
+    symbol: str,
+    endpoint: str,
+    interval: str | None = None,
+) -> MarketDataArtifact:
+    raw = getattr(response, "raw", None)
+    if raw is None:
+        raise RuntimeError(f"{endpoint}: market-data persistence requires raw retention")
+    prefix = "/fapi/v1" if market is Market.USDM else "/api/v3"
+    return MarketDataArtifact(
+        source_type=MarketDataSource.REST,
+        dataset=dataset,
+        market=market.value,
+        symbol=symbol,
+        interval=interval,
+        source_url=f"{prefix}/{endpoint}",
+        raw_key=raw.key,
+        raw_sha256=raw.sha256,
+        raw_size=raw.size,
+        fetched_at=raw.fetched_at,
+        metadata={"endpoint": endpoint},
+    )
+
+
+def _archive_artifact(payload: ArchivePayload) -> MarketDataArtifact:
+    artifact = payload.artifact
+    request = artifact.request
+    dataset = "funding_rate" if request.dataset is ArchiveDataset.FUNDING_RATE else "kline"
+    return MarketDataArtifact(
+        source_type=MarketDataSource.ARCHIVE,
+        dataset=dataset,
+        market=request.market.value,
+        symbol=request.symbol,
+        interval=request.interval,
+        source_url=request.url,
+        period_start=request.period_start,
+        period_end=request.period_end,
+        raw_key=artifact.payload.key,
+        raw_sha256=artifact.payload.sha256,
+        raw_size=artifact.payload.size,
+        checksum_key=artifact.checksum.key,
+        checksum_sha256=artifact.checksum.sha256,
+        expected_payload_sha256=artifact.expected_payload_sha256,
+        fetched_at=artifact.fetched_at,
+        metadata={
+            "checksum_url": request.checksum_url,
+            "csv_sha256": hashlib.sha256(payload.csv_bytes).hexdigest(),
+        },
+    )
+
+
+def _date_argument(value: str, name: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an ISO date (YYYY-MM-DD)") from exc
+
+
+def _utc_day(value: date) -> datetime:
+    return datetime.combine(value, time.min, tzinfo=UTC)
+
+
+async def cmd_backfill(settings: Settings, args: argparse.Namespace) -> int:
+    """Checksum-verified monthly archive backfill over an explicit half-open range."""
+
+    if settings.binance_env.value != VenueEnvironment.PRODUCTION.value:
+        raise ValueError("data.binance.vision backfill requires BINANCE_ENV=production")
+    start = _date_argument(args.start, "--start")
+    end = _date_argument(args.end, "--end")
+    current_month = datetime.now(UTC).date().replace(day=1)
+    if end > current_month:
+        raise ValueError(
+            "monthly archive backfill must end on or before the current month; "
+            "use live collectors for the unpublished tail"
+        )
+    dataset = ArchiveDataset.FUNDING_RATE if args.dataset == "funding" else ArchiveDataset.KLINES
+    market = Market(args.market)
+    if dataset is ArchiveDataset.FUNDING_RATE and market is not Market.USDM:
+        raise ValueError("funding archives exist only for --market usdm")
+
+    async def body(session: AsyncSession) -> int:
+        specifications = await _approved_specifications(session, settings)
+        symbols = _selected_symbols(args, specifications)
+        requests = tuple(
+            request
+            for symbol in symbols
+            for request in monthly_requests(
+                dataset=dataset,
+                market=market,
+                symbol=symbol,
+                start=start,
+                end=end,
+                interval=args.interval if dataset is ArchiveDataset.KLINES else None,
+            )
+        )
+        if len(requests) > args.max_files:
+            raise ValueError(
+                f"backfill plan contains {len(requests)} files, above --max-files "
+                f"{args.max_files}; split the date/symbol range or raise the explicit limit"
+            )
+        print(
+            f"plan dataset={args.dataset} market={market.value} symbols={len(symbols)} "
+            f"files={len(requests)} range=[{start},{end})"
+        )
+        if args.dry_run:
+            for request in requests:
+                print(request.url)
+            return 0
+
+        store = create_raw_store(settings)
+        repository = MarketDataRepository(session, environment=settings.binance_env.value)
+        start_at, end_at = _utc_day(start), _utc_day(end)
+        totals = {"rows": 0, "inserted": 0, "existing": 0, "blocked": 0}
+        async with create_http_client() as http:
+            archive = BinanceArchiveClient(
+                environment=VenueEnvironment.PRODUCTION,
+                http=http,
+                raw_store=store,
+            )
+            for request in requests:
+                payload = await archive.fetch(request)
+                source = _archive_artifact(payload)
+                if dataset is ArchiveDataset.FUNDING_RATE:
+                    parsed = parse_funding_csv(
+                        payload.csv_bytes,
+                        symbol=request.symbol,
+                        collected_at=payload.artifact.fetched_at,
+                    )
+                    funding_rows = tuple(
+                        row for row in parsed if start_at <= row.funding_time < end_at
+                    )
+                    result = await repository.ingest_funding(funding_rows, artifact=source)
+                else:
+                    parsed_klines = parse_kline_csv(
+                        payload.csv_bytes,
+                        symbol=request.symbol,
+                        market=market,
+                        collected_at=payload.artifact.fetched_at,
+                    )
+                    kline_rows = tuple(
+                        row for row in parsed_klines if start_at <= row.open_time < end_at
+                    )
+                    result = await repository.ingest_klines(
+                        kline_rows,
+                        interval=args.interval,
+                        artifact=source,
+                    )
+                totals["rows"] += result.rows
+                totals["inserted"] += result.inserted
+                totals["existing"] += result.existing
+                totals["blocked"] += int(result.status is DataQualityStatus.BLOCKED)
+                print(
+                    f"{request.symbol:16} {request.period_label} "
+                    f"{result.status.value:7} rows={result.rows} inserted={result.inserted} "
+                    f"existing={result.existing} gaps={result.gaps} "
+                    f"conflicts={result.conflicts}"
+                )
+        print("totals " + " ".join(f"{name}={value}" for name, value in totals.items()))
+        return 1 if totals["blocked"] else 0
+
+    return await _run_audited(settings, job_name="backfill", argv=sys.argv[1:], body=body)
+
+
+def _funding_interval(specification: dict[str, object]) -> int:
+    schedule = specification.get("funding_schedule")
+    if not isinstance(schedule, dict):
+        raise RuntimeError("approved specification has no funding interval")
+    interval = schedule.get("interval_hours")
+    if not isinstance(interval, int):
+        raise RuntimeError("approved specification has no funding interval")
+    return interval
+
+
+async def cmd_record_funding(settings: Settings, args: argparse.Namespace) -> int:
+    async def body(session: AsyncSession) -> int:
+        specifications = await _approved_specifications(session, settings)
+        symbols = _selected_symbols(args, specifications)
+        store = create_raw_store(settings)
+        repository = MarketDataRepository(session, environment=settings.binance_env.value)
+        blocked = 0
+        async with create_http_client() as http:
+            api = BinanceRestClient(
+                environment=_venue_environment(settings), http=http, raw_store=store
+            )
+            for symbol in symbols:
+                history = await api.funding_history(symbol, limit=args.limit)
+                funding_result = await repository.ingest_funding(
+                    tuple(history.value),
+                    artifact=_rest_artifact(
+                        history,
+                        dataset="funding_rate",
+                        market=Market.USDM,
+                        symbol=symbol,
+                        endpoint="fundingRate",
+                    ),
+                    expected_interval_hours=_funding_interval(specifications[symbol]),
+                )
+                mark = await api.mark_price(symbol)
+                mark_inserted = await repository.record_mark_price(
+                    mark.value,
+                    artifact=_rest_artifact(
+                        mark,
+                        dataset="mark_price",
+                        market=Market.USDM,
+                        symbol=symbol,
+                        endpoint="premiumIndex",
+                    ),
+                )
+                blocked += int(funding_result.status is DataQualityStatus.BLOCKED)
+                print(
+                    f"{symbol:16} {funding_result.status.value:7} "
+                    f"funding_inserted={funding_result.inserted} "
+                    f"funding_existing={funding_result.existing} "
+                    f"mark_inserted={mark_inserted}"
+                )
+        return 1 if blocked else 0
+
+    return await _run_audited(settings, job_name="record-funding", argv=sys.argv[1:], body=body)
+
+
+async def cmd_record_prices(settings: Settings, args: argparse.Namespace) -> int:
+    async def body(session: AsyncSession) -> int:
+        specifications = await _approved_specifications(session, settings)
+        symbols = _selected_symbols(args, specifications)
+        store = create_raw_store(settings)
+        repository = MarketDataRepository(session, environment=settings.binance_env.value)
+        inserted = 0
+        async with create_http_client() as http:
+            api = BinanceRestClient(
+                environment=_venue_environment(settings), http=http, raw_store=store
+            )
+            for symbol in symbols:
+                mark = await api.mark_price(symbol)
+                inserted += int(
+                    await repository.record_mark_price(
+                        mark.value,
+                        artifact=_rest_artifact(
+                            mark,
+                            dataset="mark_price",
+                            market=Market.USDM,
+                            symbol=symbol,
+                            endpoint="premiumIndex",
+                        ),
+                    )
+                )
+                for market in (Market.USDM, Market.SPOT):
+                    book = await api.book_ticker(symbol, market)
+                    inserted += int(
+                        await repository.record_book_ticker(
+                            book.value,
+                            artifact=_rest_artifact(
+                                book,
+                                dataset="book_ticker",
+                                market=market,
+                                symbol=symbol,
+                                endpoint="ticker/bookTicker",
+                            ),
+                        )
+                    )
+                print(f"{symbol:16} recorded mark + USD-M book + spot book")
+        print(f"inserted={inserted} symbols={len(symbols)}")
+        return 0
+
+    return await _run_audited(settings, job_name="record-prices", argv=sys.argv[1:], body=body)
+
+
+async def cmd_market_data_status(settings: Settings, args: argparse.Namespace) -> int:
+    async with _session(settings) as session:
+        status = await MarketDataRepository(
+            session, environment=settings.binance_env.value
+        ).status()
+    report = {
+        "environment": settings.binance_env.value,
+        "artifacts": status.artifacts,
+        "funding_rows": status.funding_rows,
+        "kline_rows": status.kline_rows,
+        "mark_snapshots": status.mark_snapshots,
+        "book_snapshots": status.book_snapshots,
+        "quality_assessments": status.quality_assessments,
+        "blocked_assessments": status.blocked_assessments,
+        "latest_funding_at": status.latest_funding_at,
+        "latest_prices_at": status.latest_prices_at,
+    }
+    if args.json:
+        _print(report, as_json=True)
+    else:
+        for key, value in report.items():
+            print(f"{key:24} {value}")
+    return 1 if status.blocked_assessments else 0
 
 
 # ---------------------------------------------------------------------------
@@ -735,8 +1113,10 @@ async def cmd_promotion_status(settings: Settings, args: argparse.Namespace) -> 
 async def cmd_dashboard(settings: Settings, args: argparse.Namespace) -> int:
     """The operator view. Always prefer this to a number written in a document."""
     print("=" * 72)
-    print(f"crypto-trading-system   mode={settings.trading_mode.value}   "
-          f"env={settings.binance_env.value}")
+    print(
+        f"crypto-trading-system   mode={settings.trading_mode.value}   "
+        f"env={settings.binance_env.value}"
+    )
     print("=" * 72)
     print("\n[status]")
     await cmd_status(settings, argparse.Namespace(json=False))
@@ -830,6 +1210,43 @@ def build_parser() -> argparse.ArgumentParser:
     instrument_review.add_argument("--reason", required=True)
     instrument_review.set_defaults(func=cmd_instrument_review)
 
+    backfill = sub.add_parser("backfill", help="checksum-verified monthly archive ingestion")
+    backfill.add_argument("--dataset", required=True, choices=("funding", "klines"))
+    backfill.add_argument(
+        "--market", choices=[market.value for market in Market], default=Market.USDM.value
+    )
+    backfill.add_argument("--interval", default="1h")
+    backfill.add_argument("--start", required=True, help="inclusive UTC date YYYY-MM-DD")
+    backfill.add_argument("--end", required=True, help="exclusive UTC date YYYY-MM-DD")
+    backfill.add_argument("--dry-run", action="store_true")
+    backfill.add_argument(
+        "--max-files",
+        type=int,
+        default=120,
+        help="explicit safety ceiling for one atomic backfill transaction",
+    )
+    _add_symbol_selector(backfill)
+    backfill.set_defaults(func=cmd_backfill)
+
+    record_funding = sub.add_parser(
+        "record-funding", help="persist recent settled funding and current mark/index"
+    )
+    record_funding.add_argument("--limit", type=int, default=10)
+    _add_symbol_selector(record_funding)
+    record_funding.set_defaults(func=cmd_record_funding)
+
+    record_prices = sub.add_parser(
+        "record-prices", help="persist current mark plus spot and USD-M best books"
+    )
+    _add_symbol_selector(record_prices)
+    record_prices.set_defaults(func=cmd_record_prices)
+
+    market_data_status = sub.add_parser(
+        "market-data-status", help="persisted market series and quality summary"
+    )
+    market_data_status.add_argument("--json", action="store_true")
+    market_data_status.set_defaults(func=cmd_market_data_status)
+
     promotion = sub.add_parser("promotion-status", help="promotion gates and binding constraint")
     promotion.add_argument("--json", action="store_true")
     promotion.set_defaults(func=cmd_promotion_status)
@@ -838,6 +1255,20 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.set_defaults(func=cmd_dashboard)
 
     return parser
+
+
+def _add_symbol_selector(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--symbol",
+        action="append",
+        help="approved symbol; repeat for more than one",
+    )
+    group.add_argument(
+        "--all-approved",
+        action="store_true",
+        help="operate on every symbol in the current exact approved catalog",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
