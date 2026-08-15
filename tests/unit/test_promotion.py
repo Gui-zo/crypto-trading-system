@@ -33,8 +33,9 @@ from domain.promotion import (
 TODAY = date(2026, 8, 9)
 
 
-def days_back(count: int, source: EvidenceSource = EvidenceSource.PAPER_PROSPECTIVE,
-              *, offset: int = 1) -> list[EvidenceDay]:
+def days_back(
+    count: int, source: EvidenceSource = EvidenceSource.PAPER_PROSPECTIVE, *, offset: int = 1
+) -> list[EvidenceDay]:
     """``count`` consecutive evidence days ending ``offset`` days before TODAY."""
     return [
         EvidenceDay(observed_on=TODAY - timedelta(days=offset + i), source=source)
@@ -146,14 +147,22 @@ def test_a_gate_with_no_evidence_is_unavailable_not_passing() -> None:
 def test_a_strict_gate_is_not_cleared_by_a_tie() -> None:
     """Matching the naive baseline means the model added nothing."""
     tie = AccrualGate(
-        key="skill", label="brier skill", observed=0.0, required=0.0,
-        daily_rate=None, strict=True,
+        key="skill",
+        label="brier skill",
+        observed=0.0,
+        required=0.0,
+        daily_rate=None,
+        strict=True,
     )
     assert tie.status is not GateStatus.PASS
 
     better = AccrualGate(
-        key="skill", label="brier skill", observed=0.05, required=0.0,
-        daily_rate=None, strict=True,
+        key="skill",
+        label="brier skill",
+        observed=0.05,
+        required=0.0,
+        daily_rate=None,
+        strict=True,
     )
     assert better.status is GateStatus.PASS
 
@@ -234,7 +243,10 @@ def test_a_breach_is_permanent_and_has_no_projected_date() -> None:
 def test_a_ceiling_gate_with_no_evidence_is_unavailable() -> None:
     """Zero violations across zero opportunities to violate proves nothing."""
     gate = CeilingGate(
-        key="violations", label="invariant violations", observed=0.0, limit=0.0,
+        key="violations",
+        label="invariant violations",
+        observed=0.0,
+        limit=0.0,
         has_evidence=False,
     )
     assert gate.status is GateStatus.UNAVAILABLE
@@ -243,7 +255,10 @@ def test_a_ceiling_gate_with_no_evidence_is_unavailable() -> None:
 def test_a_breach_fails_even_without_a_full_evidence_window() -> None:
     """Observing a violation is itself the evidence; it disqualifies either way."""
     gate = CeilingGate(
-        key="violations", label="invariant violations", observed=2.0, limit=0.0,
+        key="violations",
+        label="invariant violations",
+        observed=2.0,
+        limit=0.0,
         has_evidence=False,
     )
     assert gate.status is GateStatus.FAILED
@@ -269,8 +284,12 @@ def test_unavailable_outranks_stalled_and_accruing() -> None:
         AccrualGate(key="accruing", label="a", observed=1.0, required=10.0, daily_rate=1.0),
         AccrualGate(key="stalled", label="s", observed=1.0, required=10.0, daily_rate=None),
         AccrualGate(
-            key="unavailable", label="u", observed=0.0, required=10.0,
-            daily_rate=None, has_evidence=False,
+            key="unavailable",
+            label="u",
+            observed=0.0,
+            required=10.0,
+            daily_rate=None,
+            has_evidence=False,
         ),
     ]
     binding = binding_gate(gates)

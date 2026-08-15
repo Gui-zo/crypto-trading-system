@@ -84,9 +84,7 @@ def test_the_contract_type_vocabulary_includes_tokenised_equities() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("hours", "per_day"), [(1, 24), (4, 6), (8, 3), (12, 2), (24, 1)]
-)
+@pytest.mark.parametrize(("hours", "per_day"), [(1, 24), (4, 6), (8, 3), (12, 2), (24, 1)])
 def test_settlements_per_day_follows_the_interval(hours: int, per_day: int) -> None:
     assert FundingSchedule(interval_hours=hours).settlements_per_day == per_day
 

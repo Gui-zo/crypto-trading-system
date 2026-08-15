@@ -101,9 +101,7 @@ def test_spot_style_unsuffixed_header_is_understood() -> None:
 def test_the_suffixed_header_wins_when_both_are_present() -> None:
     """Spot sends both; the 1m form is the one that matches the 1m window."""
     b = budget()
-    snapshot = b.observe_headers(
-        {"x-mbx-used-weight": "5", "x-mbx-used-weight-1m": "22"}, now=NOW
-    )
+    snapshot = b.observe_headers({"x-mbx-used-weight": "5", "x-mbx-used-weight-1m": "22"}, now=NOW)
     assert snapshot is not None
     assert snapshot.used == 22
 

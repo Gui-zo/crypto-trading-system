@@ -290,9 +290,7 @@ class MarginSchedule:
     def as_dict(self) -> dict[str, object]:
         return {
             "notional_coefficient": (
-                str(self.notional_coefficient)
-                if self.notional_coefficient is not None
-                else None
+                str(self.notional_coefficient) if self.notional_coefficient is not None else None
             ),
             "tiers": [tier.as_dict() for tier in self.tiers],
         }

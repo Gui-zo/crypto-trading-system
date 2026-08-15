@@ -60,12 +60,20 @@ async def test_a_clear_records_the_event_it_supersedes(db_session: AsyncSession)
     key = unique_key("MARKET")
     controls = repo(db_session)
     activated = await controls.set_control(
-        scope=SafetyScope.MARKET, scope_key=key, action=SafetyControlAction.ACTIVATE,
-        reason="halt", actor="gcalixto", source="CLI",
+        scope=SafetyScope.MARKET,
+        scope_key=key,
+        action=SafetyControlAction.ACTIVATE,
+        reason="halt",
+        actor="gcalixto",
+        source="CLI",
     )
     cleared = await controls.set_control(
-        scope=SafetyScope.MARKET, scope_key=key, action=SafetyControlAction.CLEAR,
-        reason="resolved", actor="gcalixto", source="CLI",
+        scope=SafetyScope.MARKET,
+        scope_key=key,
+        action=SafetyControlAction.CLEAR,
+        reason="resolved",
+        actor="gcalixto",
+        source="CLI",
     )
     row = await db_session.get(SafetyControlEventRecord, cleared.event_id)
     assert row is not None
@@ -97,12 +105,22 @@ async def test_a_changed_reason_is_a_new_event(db_session: AsyncSession) -> None
     key = unique_key("DATA_PROVIDER")
     controls = repo(db_session)
     await controls.set_control(
-        scope=SafetyScope.DATA_PROVIDER, scope_key=key, action=SafetyControlAction.ACTIVATE,
-        reason="artifact stale", actor="watchdog", source="OPERATIONAL_HEALTH", automatic=True,
+        scope=SafetyScope.DATA_PROVIDER,
+        scope_key=key,
+        action=SafetyControlAction.ACTIVATE,
+        reason="artifact stale",
+        actor="watchdog",
+        source="OPERATIONAL_HEALTH",
+        automatic=True,
     )
     await controls.set_control(
-        scope=SafetyScope.DATA_PROVIDER, scope_key=key, action=SafetyControlAction.ACTIVATE,
-        reason="job crashed", actor="watchdog", source="OPERATIONAL_HEALTH", automatic=True,
+        scope=SafetyScope.DATA_PROVIDER,
+        scope_key=key,
+        action=SafetyControlAction.ACTIVATE,
+        reason="job crashed",
+        actor="watchdog",
+        source="OPERATIONAL_HEALTH",
+        automatic=True,
     )
     history = await controls.history(scope=SafetyScope.DATA_PROVIDER, scope_key=key)
     assert [state.reason for state in history] == ["artifact stale", "job crashed"]
@@ -119,8 +137,12 @@ async def test_current_state_is_the_latest_event_for_the_scope(
         (SafetyControlAction.ACTIVATE, "three"),
     ):
         await controls.set_control(
-            scope=SafetyScope.STRATEGY, scope_key=key, action=action,
-            reason=reason, actor="gcalixto", source="CLI",
+            scope=SafetyScope.STRATEGY,
+            scope_key=key,
+            action=action,
+            reason=reason,
+            actor="gcalixto",
+            source="CLI",
         )
     (state,) = await controls.states_for((SafetyScopeRef(SafetyScope.STRATEGY, key),))
     assert state.action is SafetyControlAction.ACTIVATE
@@ -133,8 +155,12 @@ async def test_a_testnet_halt_does_not_halt_production(db_session: AsyncSession)
     scope = (SafetyScopeRef(SafetyScope.VENUE, key),)
 
     await repo(db_session, environment="testnet").set_control(
-        scope=SafetyScope.VENUE, scope_key=key, action=SafetyControlAction.ACTIVATE,
-        reason="testnet outage", actor="gcalixto", source="CLI",
+        scope=SafetyScope.VENUE,
+        scope_key=key,
+        action=SafetyControlAction.ACTIVATE,
+        reason="testnet outage",
+        actor="gcalixto",
+        source="CLI",
     )
 
     testnet_states = await repo(db_session, environment="testnet").states_for(scope)
@@ -148,16 +174,28 @@ async def test_active_only_filters_cleared_scopes(db_session: AsyncSession) -> N
     cleared_key = unique_key("ACCOUNT_CLEAR")
     controls = repo(db_session)
     await controls.set_control(
-        scope=SafetyScope.ACCOUNT, scope_key=halted_key, action=SafetyControlAction.ACTIVATE,
-        reason="drawdown", actor="gcalixto", source="CLI",
+        scope=SafetyScope.ACCOUNT,
+        scope_key=halted_key,
+        action=SafetyControlAction.ACTIVATE,
+        reason="drawdown",
+        actor="gcalixto",
+        source="CLI",
     )
     await controls.set_control(
-        scope=SafetyScope.ACCOUNT, scope_key=cleared_key, action=SafetyControlAction.ACTIVATE,
-        reason="drawdown", actor="gcalixto", source="CLI",
+        scope=SafetyScope.ACCOUNT,
+        scope_key=cleared_key,
+        action=SafetyControlAction.ACTIVATE,
+        reason="drawdown",
+        actor="gcalixto",
+        source="CLI",
     )
     await controls.set_control(
-        scope=SafetyScope.ACCOUNT, scope_key=cleared_key, action=SafetyControlAction.CLEAR,
-        reason="reset", actor="gcalixto", source="CLI",
+        scope=SafetyScope.ACCOUNT,
+        scope_key=cleared_key,
+        action=SafetyControlAction.CLEAR,
+        reason="reset",
+        actor="gcalixto",
+        source="CLI",
     )
 
     active_keys = {state.scope_key for state in await controls.current_states(active_only=True)}
@@ -168,8 +206,12 @@ async def test_active_only_filters_cleared_scopes(db_session: AsyncSession) -> N
 async def test_the_global_scope_normalizes_to_a_star(db_session: AsyncSession) -> None:
     controls = repo(db_session)
     state = await controls.set_control(
-        scope=SafetyScope.GLOBAL, scope_key="", action=SafetyControlAction.CLEAR,
-        reason="baseline", actor="gcalixto", source="CLI",
+        scope=SafetyScope.GLOBAL,
+        scope_key="",
+        action=SafetyControlAction.CLEAR,
+        reason="baseline",
+        actor="gcalixto",
+        source="CLI",
     )
     assert state.scope_key == "*"
 

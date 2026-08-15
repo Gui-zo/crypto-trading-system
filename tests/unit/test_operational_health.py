@@ -76,25 +76,19 @@ def test_fresh_data_with_a_failing_job_still_blocks() -> None:
             ),
         )
     )
-    assert (
-        status_of(evaluation, "FUNDING_HISTORY_JOB_SUCCESS_FRESHNESS") is SafetyCheckStatus.BLOCK
-    )
+    assert status_of(evaluation, "FUNDING_HISTORY_JOB_SUCCESS_FRESHNESS") is SafetyCheckStatus.BLOCK
 
 
 def test_missing_data_is_reported_as_missing_not_merely_stale() -> None:
     evaluation = evaluate_operational_health((signal(artifact_at=None),))
-    (check,) = [
-        c for c in evaluation.checks if c.name == "FUNDING_HISTORY_ARTIFACT_FRESHNESS"
-    ]
+    (check,) = [c for c in evaluation.checks if c.name == "FUNDING_HISTORY_ARTIFACT_FRESHNESS"]
     assert "missing" in check.detail
     assert check.observed is None
 
 
 def test_a_first_run_bootstraps_from_a_current_artifact() -> None:
     """No terminal history yet, but the data is there — this must not halt."""
-    evaluation = evaluate_operational_health(
-        (signal(last_terminal_at=None, last_success_at=None),)
-    )
+    evaluation = evaluate_operational_health((signal(last_terminal_at=None, last_success_at=None),))
     assert evaluation.status is SafetyGateStatus.PASS
 
 
@@ -184,9 +178,7 @@ def test_a_negative_drift_tolerance_is_rejected() -> None:
         ("stale_running_count", -1, "counts cannot be negative"),
     ],
 )
-def test_signal_construction_validates_its_inputs(
-    field: str, value: object, match: str
-) -> None:
+def test_signal_construction_validates_its_inputs(field: str, value: object, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         signal(**{field: value})
 

@@ -30,9 +30,15 @@ def frame(update_id: int, *, stream: str = "btcusdt@bookTicker") -> str:
         {
             "stream": stream,
             "data": {
-                "e": "bookTicker", "u": update_id, "s": "BTCUSDT",
-                "b": "65091.30", "B": "4.167", "a": "65091.40", "A": "13.549",
-                "T": 1786310574270, "E": 1786310574270,
+                "e": "bookTicker",
+                "u": update_id,
+                "s": "BTCUSDT",
+                "b": "65091.30",
+                "B": "4.167",
+                "a": "65091.40",
+                "A": "13.549",
+                "T": 1786310574270,
+                "E": 1786310574270,
             },
         }
     )

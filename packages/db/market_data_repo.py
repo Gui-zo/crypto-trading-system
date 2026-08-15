@@ -511,8 +511,7 @@ class MarketDataRepository:
             select(1)
             .where(
                 later.environment == MarketDataQualityAssessmentRecord.environment,
-                later.source_artifact_id
-                == MarketDataQualityAssessmentRecord.source_artifact_id,
+                later.source_artifact_id == MarketDataQualityAssessmentRecord.source_artifact_id,
                 later.status == DataQualityStatus.PASS.value,
                 later.evaluated_at > MarketDataQualityAssessmentRecord.evaluated_at,
             )

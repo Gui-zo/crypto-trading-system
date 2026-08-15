@@ -159,8 +159,9 @@ def test_basis_point_round_trip() -> None:
     assert Decimal("0.0001") == BPS
 
 
-@given(bps=st.decimals(min_value=0, max_value=10000, allow_nan=False, allow_infinity=False,
-                       places=4))
+@given(
+    bps=st.decimals(min_value=0, max_value=10000, allow_nan=False, allow_infinity=False, places=4)
+)
 def test_bps_conversions_are_inverses(bps: Decimal) -> None:
     assert to_bps(from_bps(bps)) == bps
 

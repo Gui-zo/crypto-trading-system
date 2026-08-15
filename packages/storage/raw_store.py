@@ -76,8 +76,7 @@ class RawStore(Protocol):
         """Return the bytes at ``key`` or raise :class:`RawObjectNotFound`."""
         ...
 
-    def exists(self, key: str) -> bool:
-        ...
+    def exists(self, key: str) -> bool: ...
 
 
 class InMemoryRawStore:
@@ -240,9 +239,7 @@ def create_raw_store(settings: Settings) -> RawStore:
 
     if settings.raw_store_backend is RawStoreBackend.S3:
         if not settings.raw_store_s3_bucket:
-            raise RawStoreError(
-                "RAW_STORE_BACKEND=s3 requires RAW_STORE_S3_BUCKET to be set"
-            )
+            raise RawStoreError("RAW_STORE_BACKEND=s3 requires RAW_STORE_S3_BUCKET to be set")
         return S3RawStore(
             settings.raw_store_s3_bucket,
             prefix=settings.raw_store_s3_prefix,

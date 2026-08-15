@@ -557,3 +557,238 @@ class MarketDataQualityAssessmentRecord(Base):
     conflict_count: Mapped[int] = mapped_column(Integer)
     details_json: Mapped[dict[str, object]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — funding-persistence model provenance, predictions, and evidence.
+# ---------------------------------------------------------------------------
+
+
+class ModelVersionRecord(Base):
+    """Immutable, content-addressed identity for one model version (ADR-0021).
+
+    Not environment-scoped: this is code identity, not market data. What the
+    version *did* — predictions and evaluations — is scoped, because those are
+    keyed by symbol and Binance reuses symbols across environments (ADR-0010).
+
+    The provenance columns are ``NOT NULL`` together on purpose. A schema that
+    permits a null artifact beside a populated commit cannot distinguish "this
+    model has no trained artifact" from "somebody forgot".
+    """
+
+    __tablename__ = "model_versions"
+    __table_args__ = (
+        UniqueConstraint("content_sha256", name="uq_model_versions_content_sha256"),
+        CheckConstraint("length(content_sha256) = 64", name="valid_content_sha256"),
+        CheckConstraint("length(source_sha256) = 64", name="valid_source_sha256"),
+        CheckConstraint("length(code_commit) = 40", name="valid_code_commit"),
+        CheckConstraint("data_row_count > 0 AND data_symbol_count > 0", name="positive_data_scope"),
+        CheckConstraint(
+            "(training_start IS NULL) = (training_end IS NULL)", name="training_bounds_together"
+        ),
+        Index("ix_model_versions_semantic_created", "semantic_version", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    schema_version: Mapped[str] = mapped_column(String(32))
+    semantic_version: Mapped[str] = mapped_column(String(64))
+    artifact_uri: Mapped[str] = mapped_column(Text)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    source_files_json: Mapped[list[str]] = mapped_column(JSON)
+    code_commit: Mapped[str] = mapped_column(String(40))
+    data_snapshot_id: Mapped[str] = mapped_column(Text)
+    data_row_count: Mapped[int] = mapped_column(Integer)
+    data_symbol_count: Mapped[int] = mapped_column(Integer)
+    data_range_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    data_range_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    parameters_json: Mapped[dict[str, str]] = mapped_column(JSON)
+    training_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    training_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    untrained: Mapped[bool] = mapped_column(Boolean)
+    provenance_json: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FundingPredictionRecord(Base):
+    """One immutable forecast for one decision point under one exact target.
+
+    Identity is (environment, model version, symbol, decision time, target). The
+    target is part of the key because a probability under a 0 bps threshold and
+    one under 1 bps answer different questions and must never be pooled.
+
+    ``resolved_at`` is when the outcome became knowable — the last settlement of
+    the target window. It is stored because the leakage rule is expressed in
+    terms of it, so an auditor can re-derive which predictions were legitimately
+    available to any later one.
+    """
+
+    __tablename__ = "funding_predictions"
+    __table_args__ = (
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint(
+            "model_probability >= 0 AND model_probability <= 1",
+            name="model_probability_is_a_probability",
+        ),
+        CheckConstraint(
+            "naive_probability >= 0 AND naive_probability <= 1",
+            name="naive_probability_is_a_probability",
+        ),
+        CheckConstraint(
+            "climatology_probability >= 0 AND climatology_probability <= 1",
+            name="climatology_probability_is_a_probability",
+        ),
+        CheckConstraint("horizon >= 1", name="positive_horizon"),
+        CheckConstraint("prior_cases >= 0 AND matched_cases >= 0", name="nonnegative_evidence"),
+        CheckConstraint("resolved_at >= decision_time", name="resolution_follows_decision"),
+        UniqueConstraint(
+            "environment",
+            "model_version_id",
+            "symbol",
+            "decision_time",
+            "threshold_bps",
+            "horizon",
+            name="uq_funding_predictions_identity",
+        ),
+        ForeignKeyConstraint(("model_version_id",), ("model_versions.id",)),
+        Index("ix_funding_predictions_lookup", "environment", "symbol", "decision_time"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    model_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    symbol: Mapped[str] = mapped_column(String(64))
+    decision_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    threshold_bps: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    horizon: Mapped[int] = mapped_column(Integer)
+    model_probability: Mapped[float] = mapped_column(Numeric(9, 8))
+    naive_probability: Mapped[float] = mapped_column(Numeric(9, 8))
+    climatology_probability: Mapped[float] = mapped_column(Numeric(9, 8))
+    outcome: Mapped[bool] = mapped_column(Boolean)
+    previous_above: Mapped[bool] = mapped_column(Boolean)
+    interval_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_step_hours: Mapped[Decimal] = mapped_column(Numeric(12, 4))
+    prior_cases: Mapped[int] = mapped_column(Integer)
+    matched_cases: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelEvaluationRecord(Base):
+    """Immutable calibration and skill evidence for one model version.
+
+    ``eligible_status`` is deliberately not a boolean. Archive replay can produce
+    a strong number and still be worth nothing toward promotion (ADR-0012), so
+    the row says which it is rather than leaving a reader to infer it.
+    """
+
+    __tablename__ = "model_evaluations"
+    __table_args__ = (
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint(
+            "evidence_source IN ('PAPER_PROSPECTIVE', 'BACKTEST', 'TESTNET', 'SYNTHETIC')",
+            name="valid_evidence_source",
+        ),
+        CheckConstraint(
+            "eligible_status IN ('RESEARCH_ONLY', 'PROMOTION_ELIGIBLE')",
+            name="valid_eligible_status",
+        ),
+        CheckConstraint("scored_cases >= 0 AND skipped_cases >= 0", name="nonnegative_case_counts"),
+        CheckConstraint("horizon >= 1", name="positive_horizon"),
+        UniqueConstraint(
+            "environment",
+            "model_version_id",
+            "threshold_bps",
+            "horizon",
+            "evidence_source",
+            "data_snapshot_id",
+            name="uq_model_evaluations_identity",
+        ),
+        ForeignKeyConstraint(("model_version_id",), ("model_versions.id",)),
+        Index("ix_model_evaluations_lookup", "environment", "model_version_id", "evaluated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    model_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    evidence_source: Mapped[str] = mapped_column(String(32))
+    eligible_status: Mapped[str] = mapped_column(String(32))
+    data_snapshot_id: Mapped[str] = mapped_column(Text)
+    threshold_bps: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    horizon: Mapped[int] = mapped_column(Integer)
+    scored_cases: Mapped[int] = mapped_column(Integer)
+    skipped_cases: Mapped[int] = mapped_column(Integer)
+    model_brier: Mapped[float] = mapped_column(Numeric(12, 10))
+    naive_brier: Mapped[float] = mapped_column(Numeric(12, 10))
+    climatology_brier: Mapped[float] = mapped_column(Numeric(12, 10))
+    model_ece: Mapped[float] = mapped_column(Numeric(12, 10))
+    brier_skill_vs_naive: Mapped[float] = mapped_column(Numeric(14, 10))
+    brier_skill_vs_climatology: Mapped[float] = mapped_column(Numeric(14, 10))
+    positive_rate: Mapped[float] = mapped_column(Numeric(12, 10))
+    details_json: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelEvaluationSliceRecord(Base):
+    """Per-symbol and per-interval skill, so a pooled average cannot hide a hole.
+
+    ADR-0021 gates on the pooled number and records these. The hourly regime
+    carries a fraction of the eight-hourly one's sample, and gating on the
+    thinnest slice would block promotion on noise — but not looking at all would
+    be worse.
+    """
+
+    __tablename__ = "model_evaluation_slices"
+    __table_args__ = (
+        CheckConstraint("dimension IN ('symbol', 'interval')", name="valid_dimension"),
+        CheckConstraint("n >= 0", name="nonnegative_n"),
+        UniqueConstraint("evaluation_id", "dimension", "label", name="uq_model_evaluation_slices"),
+        ForeignKeyConstraint(("evaluation_id",), ("model_evaluations.id",)),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    evaluation_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    dimension: Mapped[str] = mapped_column(String(16))
+    label: Mapped[str] = mapped_column(String(64))
+    n: Mapped[int] = mapped_column(Integer)
+    model_brier: Mapped[float] = mapped_column(Numeric(12, 10))
+    naive_brier: Mapped[float] = mapped_column(Numeric(12, 10))
+    climatology_brier: Mapped[float] = mapped_column(Numeric(12, 10))
+    brier_skill_vs_naive: Mapped[float] = mapped_column(Numeric(14, 10))
+    brier_skill_vs_climatology: Mapped[float] = mapped_column(Numeric(14, 10))
+    positive_rate: Mapped[float] = mapped_column(Numeric(12, 10))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelChampionEventRecord(Base):
+    """Append-only champion registry. The current champion is the latest event.
+
+    Same shape as the instrument-catalog review chain (ADR-0017): an explicit
+    human decision, never inferred, never edited. A RETIRE leaves no champion
+    rather than silently falling back to an earlier one — an older model that was
+    superseded for a reason is not a safe default.
+    """
+
+    __tablename__ = "model_champion_events"
+    __table_args__ = (
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("action IN ('PROMOTE', 'RETIRE')", name="valid_action"),
+        CheckConstraint("length(trim(actor)) > 0", name="actor_is_present"),
+        CheckConstraint("length(trim(reason)) > 0", name="reason_is_present"),
+        ForeignKeyConstraint(("model_version_id",), ("model_versions.id",)),
+        ForeignKeyConstraint(("evaluation_id",), ("model_evaluations.id",)),
+        Index("ix_model_champion_events_current", "environment", "sequence"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    sequence: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
+    environment: Mapped[str] = mapped_column(String(32))
+    model_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    evaluation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    action: Mapped[str] = mapped_column(String(16))
+    actor: Mapped[str] = mapped_column(String(128))
+    reason: Mapped[str] = mapped_column(Text)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

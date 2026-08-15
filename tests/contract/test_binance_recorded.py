@@ -391,9 +391,7 @@ def test_websocket_book_ticker_frame_maps() -> None:
     assert isinstance(frame, dict)
     assert frame["stream"] == "btcusdt@bookTicker"
     wire = BookTickerStreamWire.model_validate(frame["data"])
-    ticker = mapping.stream_to_book_ticker(
-        wire, instrument=instrument(), collected_at=COLLECTED_AT
-    )
+    ticker = mapping.stream_to_book_ticker(wire, instrument=instrument(), collected_at=COLLECTED_AT)
     assert ticker.bid_price == Decimal("65091.30")
     assert ticker.ask_price == Decimal("65091.40")
     assert ticker.last_update_id == 11249981101619

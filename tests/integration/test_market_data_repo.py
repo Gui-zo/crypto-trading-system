@@ -220,9 +220,7 @@ async def test_blocked_assessment_stops_counting_once_a_later_pass_supersedes_it
 
     near = artifact(symbol, source=MarketDataSource.ARCHIVE)
     assert (
-        await repository.ingest_funding(
-            (funding(symbol, 0), funding(symbol, 8)), artifact=near
-        )
+        await repository.ingest_funding((funding(symbol, 0), funding(symbol, 8)), artifact=near)
     ).status is DataQualityStatus.PASS
 
     far = artifact(symbol, source=MarketDataSource.ARCHIVE)
@@ -236,9 +234,7 @@ async def test_blocked_assessment_stops_counting_once_a_later_pass_supersedes_it
 
     middle = artifact(symbol, source=MarketDataSource.ARCHIVE)
     assert (
-        await repository.ingest_funding(
-            (funding(symbol, 16), funding(symbol, 24)), artifact=middle
-        )
+        await repository.ingest_funding((funding(symbol, 16), funding(symbol, 24)), artifact=middle)
     ).status is DataQualityStatus.PASS
 
     replay = await repository.ingest_funding((funding(symbol, 32),), artifact=far)

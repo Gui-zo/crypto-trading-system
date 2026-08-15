@@ -85,9 +85,7 @@ async def test_inconsistent_terminal_states_are_refused(
         job_name=unique_job(), command=["x"], source="CRON", started_at=NOW
     )
     with pytest.raises(ValueError, match=match):
-        await health.finish_run(
-            run.run_id, status=status, exit_code=exit_code, finished_at=NOW
-        )
+        await health.finish_run(run.run_id, status=status, exit_code=exit_code, finished_at=NOW)
 
 
 async def test_finishing_twice_identically_is_idempotent(db_session: AsyncSession) -> None:
@@ -139,7 +137,9 @@ async def test_consecutive_failures_are_counted_back_to_the_last_success(
         ]
     ):
         run = await health.start_run(
-            job_name=job, command=["x"], source="CRON",
+            job_name=job,
+            command=["x"],
+            source="CRON",
             started_at=NOW + timedelta(minutes=index),
         )
         await health.finish_run(
@@ -215,9 +215,7 @@ async def test_a_blocked_assessment_latches_a_real_kill_switch(
     assert len(assessment.automatic_control_event_ids) == 1
 
     controls = SafetyControlRepository(db_session, environment="testnet")
-    (state,) = await controls.states_for(
-        (SafetyScopeRef(SafetyScope.DATA_PROVIDER, scope_key),)
-    )
+    (state,) = await controls.states_for((SafetyScopeRef(SafetyScope.DATA_PROVIDER, scope_key),))
     assert state.action is SafetyControlAction.ACTIVATE
 
 

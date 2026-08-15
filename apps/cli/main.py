@@ -33,6 +33,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 
 # Make the `packages/` code importable when run as a plain script.
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -54,12 +55,28 @@ from db.market_data_repo import (  # noqa: E402
     MarketDataArtifact,
     MarketDataRepository,
 )
+from db.model_repo import ModelRepository  # noqa: E402
 from db.operational_health_repo import OperationalHealthRepository  # noqa: E402
 from db.safety_repo import SafetyControlRepository  # noqa: E402
+from domain.funding_model import (  # noqa: E402
+    ExpandingPersistenceModel,
+    FundingTarget,
+    ResolvedCase,
+    ScoredCase,
+    Settlement,
+    SkipReason,
+    WalkForward,
+    build_cases,
+    score,
+    score_by_interval,
+    score_by_symbol,
+    walk_forward,
+)
 from domain.instrument import InstrumentReviewAction, VenueEnvironment  # noqa: E402
 from domain.market_data import MarketDataSource  # noqa: E402
 from domain.modes import TradingMode, is_live, permits_new_orders  # noqa: E402
 from domain.operational_health import OperationalJobStatus  # noqa: E402
+from domain.precision import parse_decimal  # noqa: E402
 from domain.promotion import (  # noqa: E402
     MAX_LIQUIDATION_INVARIANT_VIOLATIONS,
     MAX_RECONCILIATION_DISCREPANCIES,
@@ -70,6 +87,7 @@ from domain.promotion import (  # noqa: E402
     REQUIRED_PROSPECTIVE_SETTLEMENTS,
     AccrualGate,
     CeilingGate,
+    EvidenceSource,
     Gate,
     GateStatus,
     binding_gate,
@@ -81,6 +99,7 @@ from domain.safety import (  # noqa: E402
     SafetyScope,
     SafetyScopeRef,
 )
+from modeling.provenance import capture, snapshot_observations  # noqa: E402
 from observability.logging import configure_logging  # noqa: E402
 from storage.raw_store import create_raw_store  # noqa: E402
 from venue_binance.archive import (  # noqa: E402
@@ -1118,6 +1137,175 @@ async def cmd_promotion_status(settings: Settings, args: argparse.Namespace) -> 
 
 
 # ---------------------------------------------------------------------------
+# Phase-4 funding-persistence model
+# ---------------------------------------------------------------------------
+
+
+def _funding_target(args: argparse.Namespace) -> FundingTarget:
+    return FundingTarget(threshold_bps=parse_decimal(args.threshold_bps), horizon=int(args.horizon))
+
+
+async def cmd_model_baseline(settings: Settings, args: argparse.Namespace) -> int:
+    """Walk the funding-persistence baseline over history and record the evidence.
+
+    Registration fails closed when a model-relevant source file is uncommitted:
+    a digest over uncommitted bytes names code that exists on one machine, so a
+    prediction carrying it could never be reproduced (ADR-0021).
+    """
+    target = _funding_target(args)
+
+    async def body(session: AsyncSession) -> int:
+        specifications = await _approved_specifications(session, settings)
+        symbols = _selected_symbols(args, specifications)
+        market_data = MarketDataRepository(session, environment=settings.binance_env.value)
+
+        series: dict[str, tuple[Settlement, ...]] = {}
+        snapshot_rows: list[tuple[str, datetime, Decimal]] = []
+        for symbol in symbols:
+            observations = await market_data.funding_series(symbol)
+            if not observations:
+                continue
+            series[symbol] = tuple(
+                Settlement(
+                    funding_time=item.funding_time,
+                    funding_rate=item.funding_rate,
+                    interval_hours=item.interval_hours,
+                )
+                for item in observations
+            )
+            snapshot_rows.extend(
+                (symbol, item.funding_time, item.funding_rate) for item in observations
+            )
+        if not snapshot_rows:
+            raise ValueError("no funding history for the selected symbols; backfill first")
+
+        snapshot = snapshot_observations(
+            snapshot_rows,
+            range_start=min(row[1] for row in snapshot_rows),
+            range_end=max(row[1] for row in snapshot_rows),
+        )
+        model = ExpandingPersistenceModel(
+            minimum_prior_cases=args.minimum_prior_cases,
+            minimum_matched_cases=args.minimum_matched_cases,
+        )
+        provenance = capture(
+            _REPO_ROOT,
+            semantic_version=args.semantic_version,
+            data=snapshot,
+            parameters={
+                "threshold_bps": str(target.threshold_bps),
+                "horizon": str(target.horizon),
+                "minimum_prior_cases": str(model.minimum_prior_cases),
+                "minimum_matched_cases": str(model.minimum_matched_cases),
+                "smoothing": "laplace-add-one",
+            },
+        )
+
+        repository = ModelRepository(session, environment=settings.binance_env.value)
+        version = await repository.register_version(provenance)
+
+        scored: list[ScoredCase] = []
+        skipped: list[tuple[ResolvedCase, SkipReason]] = []
+        for symbol, settlements in sorted(series.items()):
+            # Each symbol gets its own expanding history: pooling one symbol's
+            # outcomes into another's estimate would be a modelling claim nobody
+            # has made or tested.
+            result = walk_forward(build_cases(symbol, settlements, target), model)
+            scored.extend(result.scored)
+            skipped.extend(result.skipped)
+        walk = WalkForward(scored=tuple(scored), skipped=tuple(skipped))
+
+        written = await repository.persist_predictions(
+            walk.scored, model_version_id=version.id, target=target
+        )
+        pooled = score(walk.scored)
+        evaluation = await repository.record_evaluation(
+            pooled,
+            model_version_id=version.id,
+            target=target,
+            evidence_source=EvidenceSource(args.evidence_source),
+            data_snapshot_id=snapshot.snapshot_id,
+            walk=walk,
+            by_symbol=score_by_symbol(walk.scored),
+            by_interval=score_by_interval(walk.scored),
+        )
+
+        print(f"model            {version.semantic_version} {version.content_sha256}")
+        print(f"commit           {version.code_commit}")
+        print(f"data snapshot    {snapshot.snapshot_id} rows={snapshot.row_count}")
+        print(f"target           threshold={target.threshold_bps}bps horizon={target.horizon}")
+        print(
+            f"predictions      scored={written.scored} inserted={written.inserted} "
+            f"existing={written.existing} skipped={len(walk.skipped)}"
+        )
+        print(
+            f"skill            vs_naive={pooled.brier_skill_vs_naive:+.5f} "
+            f"vs_climatology={pooled.brier_skill_vs_climatology:+.5f} "
+            f"ece={pooled.model.ece:.4f}"
+        )
+        print(f"evaluation       {evaluation.id} {evaluation.eligible_status}")
+        if evaluation.eligible_status != "PROMOTION_ELIGIBLE":
+            print(
+                "NOTE: archive replay is worth zero toward any promotion gate (ADR-0012); "
+                "this is research evidence only"
+            )
+        return 0
+
+    return await _run_audited(settings, job_name="model-baseline", argv=sys.argv[1:], body=body)
+
+
+async def cmd_model_status(settings: Settings, args: argparse.Namespace) -> int:
+    async with _session(settings) as session:
+        repository = ModelRepository(session, environment=settings.binance_env.value)
+        counts = await repository.counts()
+        champion = await repository.champion()
+    report: dict[str, object] = {
+        "environment": settings.binance_env.value,
+        **counts,
+        "champion": champion.semantic_version or "NONE",
+        "champion_sha256": champion.content_sha256 or "",
+        "champion_actor": champion.actor or "",
+        "champion_recorded_at": champion.recorded_at,
+    }
+    if args.json:
+        _print(report, as_json=True)
+    else:
+        for key, value in report.items():
+            print(f"{key:24} {value}")
+        if not champion.has_champion:
+            print("\nNo champion model. Sizing must never consult a model that has none.")
+    return 0
+
+
+async def cmd_model_promote(settings: Settings, args: argparse.Namespace) -> int:
+    """Append a champion decision. The gates are re-checked against stored evidence."""
+
+    async def body(session: AsyncSession) -> int:
+        repository = ModelRepository(session, environment=settings.binance_env.value)
+        version = await repository.version_by_digest(args.hash)
+        if version is None:
+            raise ValueError(f"no model version with content hash {args.hash}")
+        if args.action == "RETIRE":
+            event = await repository.retire_champion(
+                model_version_id=version.id, actor=args.actor, reason=args.reason
+            )
+        else:
+            evaluation = await repository.latest_evaluation(version.id)
+            if evaluation is None:
+                raise ValueError("model version has no evaluation in this environment")
+            event = await repository.promote_champion(
+                model_version_id=version.id,
+                evaluation_id=evaluation.id,
+                actor=args.actor,
+                reason=args.reason,
+            )
+        print(f"{event.action} model={version.semantic_version} {version.content_sha256}")
+        return 0
+
+    return await _run_audited(settings, job_name="model-promote", argv=sys.argv[1:], body=body)
+
+
+# ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
 
@@ -1258,6 +1446,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     market_data_status.add_argument("--json", action="store_true")
     market_data_status.set_defaults(func=cmd_market_data_status)
+
+    model_baseline = sub.add_parser(
+        "model-baseline", help="walk the funding-persistence baseline and record evidence"
+    )
+    model_baseline.add_argument("--semantic-version", default="funding-persistence-v1")
+    model_baseline.add_argument("--threshold-bps", default="0")
+    model_baseline.add_argument("--horizon", type=int, default=1)
+    model_baseline.add_argument("--minimum-prior-cases", type=int, default=30)
+    model_baseline.add_argument("--minimum-matched-cases", type=int, default=5)
+    model_baseline.add_argument(
+        "--evidence-source",
+        default=EvidenceSource.BACKTEST.value,
+        choices=[item.value for item in EvidenceSource],
+        help="archive replay is BACKTEST and is worth zero toward promotion",
+    )
+    _add_symbol_selector(model_baseline)
+    model_baseline.set_defaults(func=cmd_model_baseline)
+
+    model_status = sub.add_parser("model-status", help="model versions and current champion")
+    model_status.add_argument("--json", action="store_true")
+    model_status.set_defaults(func=cmd_model_status)
+
+    model_promote = sub.add_parser(
+        "model-promote", help="append a champion PROMOTE/RETIRE for an exact model hash"
+    )
+    model_promote.add_argument("--hash", required=True, help="model version content SHA-256")
+    model_promote.add_argument("--action", default="PROMOTE", choices=("PROMOTE", "RETIRE"))
+    model_promote.add_argument("--actor", required=True)
+    model_promote.add_argument("--reason", required=True)
+    model_promote.set_defaults(func=cmd_model_promote)
 
     promotion = sub.add_parser("promotion-status", help="promotion gates and binding constraint")
     promotion.add_argument("--json", action="store_true")

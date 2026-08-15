@@ -107,9 +107,7 @@ def test_environment_mismatch_blocks() -> None:
 
 def test_matching_environments_pass_in_either_environment() -> None:
     for env in ("testnet", "production"):
-        evaluation = evaluate_safety(
-            healthy_context(trading_environment=env, data_environment=env)
-        )
+        evaluation = evaluate_safety(healthy_context(trading_environment=env, data_environment=env))
         assert status_of(evaluation, "VENUE_ENVIRONMENT_SCOPE") is SafetyCheckStatus.PASS
 
 
@@ -219,9 +217,7 @@ def test_missing_provider_lineage_blocks() -> None:
     assert status_of(evaluation, "DATA_PROVIDER_LINEAGE") is SafetyCheckStatus.BLOCK
 
 
-@pytest.mark.parametrize(
-    "status", [ReconciliationStatus.UNKNOWN, ReconciliationStatus.DISCREPANCY]
-)
+@pytest.mark.parametrize("status", [ReconciliationStatus.UNKNOWN, ReconciliationStatus.DISCREPANCY])
 def test_anything_short_of_reconciled_blocks(status: ReconciliationStatus) -> None:
     evaluation = evaluate_safety(healthy_context(reconciliation_status=status))
     assert status_of(evaluation, "LEDGER_RECONCILED") is SafetyCheckStatus.BLOCK
@@ -266,9 +262,7 @@ def test_profit_never_counts_toward_the_daily_loss_limit() -> None:
 
 def test_drawdown_limit_blocks_at_the_limit() -> None:
     evaluation = evaluate_safety(
-        healthy_context(
-            drawdown_fraction=Decimal("0.10"), drawdown_limit_fraction=Decimal("0.10")
-        )
+        healthy_context(drawdown_fraction=Decimal("0.10"), drawdown_limit_fraction=Decimal("0.10"))
     )
     assert status_of(evaluation, "ROLLING_DRAWDOWN") is SafetyCheckStatus.BLOCK
     assert any("drawdown" in halt.reason for halt in evaluation.automatic_halts)
