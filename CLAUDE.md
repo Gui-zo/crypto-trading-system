@@ -12,7 +12,7 @@ command reference, what lands in which table, and — most importantly — a num
 **Known limitations** list that exists to stop you drawing wrong conclusions.
 Do not skip that section.
 
-Decision history is in [`docs/adr/`](docs/adr/) (20 ADRs). The seven most
+Decision history is in [`docs/adr/`](docs/adr/) (21 ADRs). The seven most
 load-bearing:
 
 - **[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md)** — the
@@ -85,7 +85,7 @@ a price the risk engine approved.
 ## Verification (all four must pass before committing)
 
 ```bash
-uv run pytest -q          # 477 tests
+uv run pytest -q          # 499 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -173,6 +173,13 @@ Three gate kinds, three status rules (ADR-0012):
 Only `EvidenceSource.PAPER_PROSPECTIVE` counts toward a gate. Backtest and
 testnet days count for **zero**, and a backtest day cannot bridge a gap in a
 consecutive paper run.
+
+The model must clear **two** skill gates, not one (ADR-0021). Beating the naive
+0/1 persistence rule is necessary but not sufficient: Brier punishes a confident
+error far harder than a hedged one, so on the research history a climatology
+forecaster that ignores the previous settlement entirely scored +0.139 against
+naive **while using no information**. `brier_skill_vs_climatology` is the gate
+that shows the model learned something.
 
 ## Relationship to the sibling repo
 

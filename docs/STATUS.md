@@ -33,7 +33,7 @@ decisions (ADR-0005), local-first (ADR-0002), prospective-only promotion gates
 (ADR-0012), venue-environment scoping from day one (ADR-0010), a filtered
 instrument universe (ADR-0016), content-addressed catalog review (ADR-0017),
 the research universe and range (ADR-0020).
-Full rationale in `docs/adr/` (20 ADRs).
+Full rationale in `docs/adr/` (21 ADRs).
 **ADRs 0015, 0018, 0019, and 0020 are the load-bearing venue records** — public
 REST, authenticated REST, archive documentation, and two years of ingested
 history met reality there.
@@ -61,7 +61,15 @@ artifacts, every symbol exactly complete in both spot and USD-M and replaying
 with zero inserts. Six quality assessments remain `BLOCKED`, all true positives:
 two mid-history funding-cadence changes and a settlement the venue skipped on
 2026-06-24, confirmed against REST.
-**There is still no model, no risk engine, and no code path that can submit an
+Phase 4 has begun: `packages/domain/funding_model.py` implements the ADR-0004
+target, case construction from observed settlements, the naive baseline, an
+expanding conditional-persistence model, a climatology baseline, and walk-forward
+scoring under a resolution-time leakage rule. On the research history the model
+beats naive by +0.294 and climatology by +0.180 at a 0 bps threshold (ECE 0.028,
+all 19 symbols informative), which is why kill criterion 2 was tightened to
+require both (ADR-0021). None of that is promotion evidence — it is archive
+replay, worth zero under ADR-0012.
+**There is still no risk engine and no code path that can submit an
 order.** Every promotion gate reads
 `UNAVAILABLE`, correctly, because the system has never traded.
 
@@ -76,7 +84,7 @@ hold. No later phase is inferred from an earlier component existing.
 | 1 — Read-only Binance integration | REST + WebSocket ingestion, tolerant schemas, raw retention, rate-limit budget, reconnect/gap tests, live-verified against production read-only | ✅ **Done** (ADR-0015) |
 | 2 — Instrument and margin specification | `exchangeInfo` filters, `leverageBracket` tiers, per-symbol funding schedule, versioned and fail-closed on change | ✅ **Done** — signed production capture reconciled and exact catalog hash approved (ADR-0018) |
 | 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | ✅ **Done** — 19-symbol, 24-month research range ingested and verified complete (ADR-0019, ADR-0020) |
-| 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | ⬜ Not started |
+| 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | 🟡 **Partial** — pure baseline, both gates, and the leakage rule land; persistence, provenance, and champion registry do not (ADR-0021) |
 | 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | ⬜ Not started |
 | 6 — Historical backtester | Leakage-free replay, realistic fill/slippage, funding accrual, benchmark comparison | ⬜ Not started |
 | 7 — Paper trading | Live-data two-leg simulation, mark-to-market, **reconciliation against a read-only real account**, dashboards, prospective evidence | ⬜ Not started |
@@ -120,7 +128,7 @@ apps/cli/main.py            Every command; owns the transaction
 migrations/                 Alembic (3 migrations through 62848a719f99)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
 scripts/crontab.example     Explicit BTC live-collector/watchdog schedule
-tests/                      477 unit + integration + recorded contracts
+tests/                      499 unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 

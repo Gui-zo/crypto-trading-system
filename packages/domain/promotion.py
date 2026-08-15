@@ -60,6 +60,15 @@ REQUIRED_NET_CARRY_VS_BENCHMARK_BPS = 0.0
 #: what it was last period"). Skill is ``1 - model_brier / baseline_brier``.
 REQUIRED_BRIER_SKILL_VS_NAIVE = 0.0
 
+#: ...and must also beat the expanding base rate, which ignores the previous
+#: settlement entirely. ADR-0021: naive is a 0/1 forecast and Brier punishes a
+#: confident error far harder than a hedged one, so on the research history
+#: climatology alone scored +0.139 against naive **while using no information**.
+#: Clearing only the naive gate is therefore consistent with a model that has
+#: learned nothing, which is precisely the empty-gate failure ADR-0012 exists to
+#: prevent. Both gates must clear.
+REQUIRED_BRIER_SKILL_VS_CLIMATOLOGY = 0.0
+
 #: Ceilings. Both are zero and both are meant literally.
 MAX_RECONCILIATION_DISCREPANCIES = 0
 MAX_LIQUIDATION_INVARIANT_VIOLATIONS = 0

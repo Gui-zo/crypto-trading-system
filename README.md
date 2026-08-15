@@ -17,8 +17,11 @@ guessing.
 > `[2024-08-01, 2026-08-01)` for 19 symbols — every one exactly complete in both
 > spot and USD-M, replaying with zero inserts. Six quality assessments remain
 > `BLOCKED`, all true positives: two mid-history funding-cadence changes and one
-> settlement the venue skipped (ADR-0020). There is no model, no risk engine, and
-> no code path that can submit an order.
+> settlement the venue skipped (ADR-0020). **Phase 4 has begun:** the funding-
+> persistence baseline beats naive by +0.294 and climatology by +0.180 on the
+> research history, which is why the model must now clear both gates
+> (ADR-0021) — archive replay is worth zero toward promotion. There is no risk
+> engine and no code path that can submit an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
 
@@ -181,7 +184,7 @@ v1 and will break in confusing ways.
 ### Verification — all four must pass before any commit
 
 ```bash
-uv run pytest -q          # 477 tests
+uv run pytest -q          # 499 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -246,7 +249,7 @@ Commands: `dashboard`, `status`, `safety-status`, `safety-halt`, `safety-clear`,
 |---|---|
 | [`docs/STATUS.md`](docs/STATUS.md) | **Start here.** Current state, phases, commands, known limitations, backlog |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement for AI sessions picking this up cold |
-| [`docs/adr/`](docs/adr/) | 20 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, **ADR-0019**, and **ADR-0020** record REST, authenticated, archive, and research-history first contact |
+| [`docs/adr/`](docs/adr/) | 21 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, **ADR-0019**, and **ADR-0020** record REST, authenticated, archive, and research-history first contact |
 | [`tests/fixtures/binance/`](tests/fixtures/binance/) | Recorded venue responses, and an honest list of what is still unverified |
 | [`docs/founding-readme.md`](docs/founding-readme.md) | The original specification, archived verbatim |
 
