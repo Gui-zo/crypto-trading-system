@@ -313,3 +313,65 @@ async def test_a_champion_decision_requires_an_actor_and_a_reason(
 
     with pytest.raises(ModelRepositoryError, match="actor and a reason"):
         await repository.retire_champion(model_version_id=version.id, actor="  ", reason="x")
+
+
+async def test_recording_the_same_evaluation_twice_returns_the_first(
+    db_session: AsyncSession,
+) -> None:
+    """Identical model, target, and data snapshot must be idempotent, not a
+    unique-constraint crash halfway through a long run."""
+    repository = ModelRepository(db_session, environment="testnet")
+    version = await repository.register_version(provenance())
+    target = FundingTarget(threshold_bps=Decimal("0"))
+    result = walked(f"T{uuid.uuid4().hex[:10].upper()}USDT", alternating(80), target)
+    snapshot_id = f"rows-sha256://{uuid.uuid4().hex}{uuid.uuid4().hex}"
+
+    first = await repository.record_evaluation(
+        score(result.scored),
+        model_version_id=version.id,
+        target=target,
+        evidence_source=EvidenceSource.BACKTEST,
+        data_snapshot_id=snapshot_id,
+        walk=result,
+    )
+    second = await repository.record_evaluation(
+        score(result.scored),
+        model_version_id=version.id,
+        target=target,
+        evidence_source=EvidenceSource.BACKTEST,
+        data_snapshot_id=snapshot_id,
+        walk=result,
+    )
+
+    assert first.id == second.id
+
+
+async def test_the_same_snapshot_producing_different_numbers_is_a_conflict(
+    db_session: AsyncSession,
+) -> None:
+    repository = ModelRepository(db_session, environment="testnet")
+    version = await repository.register_version(provenance())
+    target = FundingTarget(threshold_bps=Decimal("0"))
+    symbol = f"T{uuid.uuid4().hex[:10].upper()}USDT"
+    result = walked(symbol, alternating(80), target)
+    snapshot_id = f"rows-sha256://{uuid.uuid4().hex}{uuid.uuid4().hex}"
+    await repository.record_evaluation(
+        score(result.scored),
+        model_version_id=version.id,
+        target=target,
+        evidence_source=EvidenceSource.BACKTEST,
+        data_snapshot_id=snapshot_id,
+        walk=result,
+    )
+
+    different = walked(symbol, alternating(60), target)
+
+    with pytest.raises(ModelRepositoryError, match="nondeterminism"):
+        await repository.record_evaluation(
+            score(different.scored),
+            model_version_id=version.id,
+            target=target,
+            evidence_source=EvidenceSource.BACKTEST,
+            data_snapshot_id=snapshot_id,
+            walk=different,
+        )

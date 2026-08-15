@@ -224,8 +224,40 @@ class ModelRepository:
 
         ``eligible_status`` is derived here rather than passed in, so a caller
         cannot label archive replay as promotion evidence by accident.
+
+        Re-running over unchanged inputs returns the evidence already recorded.
+        The identity — model version, target, evidence source, data snapshot —
+        pins the source digest and the exact input rows, so the same key must
+        produce the same numbers. If it does not, something is nondeterministic
+        and that is a defect worth stopping for, not a row to overwrite.
         """
         eligible = PROMOTION_ELIGIBLE if evidence_source is PROMOTION_EVIDENCE else RESEARCH_ONLY
+        existing = (
+            (
+                await self._session.execute(
+                    select(ModelEvaluationRecord).where(
+                        ModelEvaluationRecord.environment == self._environment,
+                        ModelEvaluationRecord.model_version_id == model_version_id,
+                        ModelEvaluationRecord.threshold_bps == target.threshold_bps,
+                        ModelEvaluationRecord.horizon == target.horizon,
+                        ModelEvaluationRecord.evidence_source == evidence_source.value,
+                        ModelEvaluationRecord.data_snapshot_id == data_snapshot_id,
+                    )
+                )
+            )
+            .scalars()
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing.scored_cases != pooled.n or not _same_score(
+                existing.model_brier, pooled.model.brier
+            ):
+                raise ModelRepositoryError(
+                    "an evaluation already exists for this exact model, target, and data "
+                    "snapshot but with different results; identical inputs must produce "
+                    "identical evidence, so this is nondeterminism rather than an update"
+                )
+            return existing
         record = ModelEvaluationRecord(
             environment=self._environment,
             model_version_id=model_version_id,
@@ -449,6 +481,11 @@ class ModelRepository:
                 )
             ),
         }
+
+
+def _same_score(stored: object, computed: float) -> bool:
+    """Brier scores are stored at 10 decimal places; compare at that precision."""
+    return abs(Decimal(str(stored)) - Decimal(str(round(computed, 10)))) <= Decimal("0.0000000001")
 
 
 def _same_probability(stored: object, computed: float) -> bool:
