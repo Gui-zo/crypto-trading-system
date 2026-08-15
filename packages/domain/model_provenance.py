@@ -119,13 +119,20 @@ class ModelProvenance:
     def artifact_uri(self) -> str:
         return f"{SOURCE_ARTIFACT_SCHEME}{self.source_sha256}"
 
-    def as_dict(self) -> dict[str, object]:
+    def identity_dict(self) -> dict[str, object]:
+        """Everything that makes this a *distinct* model.
+
+        Deliberately excludes ``code_commit``. A later commit that leaves every
+        model source file untouched is the same model, and minting a new version
+        for it would re-record every prediction and make the identity meaningless
+        — the sibling's ADR-0015 allows an unrelated commit to reuse a registered
+        origin exactly when the content-addressed artifact is identical.
+        """
         return {
             "schema": self.schema,
             "semantic_version": self.semantic_version,
             "artifact_uri": self.artifact_uri,
             "source_files": list(self.source_files),
-            "code_commit": self.code_commit,
             "data_snapshot_id": self.data.snapshot_id,
             "data_row_count": self.data.row_count,
             "data_symbol_count": self.data.symbol_count,
@@ -139,10 +146,19 @@ class ModelProvenance:
             "untrained": self.untrained,
         }
 
+    def as_dict(self) -> dict[str, object]:
+        """The full record, including the origin commit, for storage.
+
+        The commit is retained as provenance — where this artifact was first
+        registered — but it is not part of the identity, so it is added here
+        rather than in :meth:`identity_dict`.
+        """
+        return {**self.identity_dict(), "code_commit": self.code_commit}
+
     @property
     def canonical_bytes(self) -> bytes:
         return json.dumps(
-            self.as_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            self.identity_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
         ).encode("utf-8")
 
     @property

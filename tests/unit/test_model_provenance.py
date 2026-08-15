@@ -224,3 +224,21 @@ def test_capture_refuses_a_dirty_tree_by_default(repo: Path) -> None:
             parameters={},
             files=["model.py"],
         )
+
+
+def test_an_unrelated_commit_does_not_mint_a_new_model_version() -> None:
+    """A commit that leaves every model source file untouched is the same model.
+
+    Folding the commit into the identity made every unrelated commit re-register
+    the version and re-record every prediction, which is what the sibling's
+    ADR-0015 rule about reusing a registered origin exists to prevent.
+    """
+    base = provenance()
+    later = provenance(code_commit="d" * 40)
+
+    assert base.content_sha256 == later.content_sha256
+
+
+def test_the_origin_commit_is_still_retained_for_the_record() -> None:
+    assert provenance().as_dict()["code_commit"] == COMMIT
+    assert "code_commit" not in provenance().identity_dict()
