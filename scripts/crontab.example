@@ -1,5 +1,13 @@
 # Install only on the one host that owns scheduling for this database.
-# Replace the path before using `crontab scripts/crontab.example`.
+#
+# APPEND these lines; do not pipe this file into `crontab`. `crontab <file>`
+# REPLACES the whole table, and on the development host the same user crontab
+# also carries the sibling automated-trading-system schedule — which this repo
+# must never modify. Append instead:
+#
+#   crontab -l > /tmp/ct && cat scripts/crontab.example >> /tmp/ct && crontab /tmp/ct
+#
+# Replace the path below first.
 SHELL=/bin/bash
 CRYPTO_TRADING_REPO=/absolute/path/to/crypto-trading-system
 

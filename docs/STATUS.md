@@ -211,40 +211,50 @@ wrong conclusions from the numbers above.
     Its promotion gate exists; the risk engine does not. Phase 5.
 11. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
     blocks on `UNKNOWN` because nothing can yet produce `RECONCILED`. Phase 7.
-12. **The cron file is an example, not installed state.** `health-check` is real
-    and passed after the manual BTC live cycle, but freshness will age out unless
-    `scripts/crontab.example` is installed on exactly one scheduler host. Live
-    collector freshness has been stale since 2026-08-11 for exactly this reason;
-    the archive backfill does not refresh it.
-13. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
+12. **The collector schedule is installed on this host only, since 2026-08-15**,
+    and its durable health over wall-clock time is not yet observed. It was
+    **appended** to a user crontab shared with the sibling repo — `crontab
+    scripts/crontab.example` would have deleted the sibling's schedule. It
+    collects **BTCUSDT only**; the other 18 research symbols have no live series.
+13. **A REST collection hole does not heal.** `record-funding --limit 10` reaches
+    back about 3.3 days, so the four-day outage before 2026-08-15 skipped the
+    2026-08-12 00:00 settlement, which the venue does have. A wider poll filled
+    it, but the `BLOCKED` assessment still counts: superseding matches on
+    artifact, and every REST poll is a new artifact. Only re-ingested archive
+    files supersede (ADR-0020).
+14. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
     exists. See ADR-0012 for why a naive construction would read `PASS`.
-14. **Freshness tolerances are still mostly guesses.** The funding tolerance is
+15. **Freshness tolerances are still mostly guesses.** The funding tolerance is
     now derived from the venue's own per-symbol interval (ADR-0016), but the
     60 s mark-price, 5 s order-pricing, and 60 s account-state figures have not
     been validated against recorded latency.
-15. **Testnet and production are different venues in every way that matters.**
+16. **Testnet and production are different venues in every way that matters.**
     854 symbols vs 731, weight limit 2400/min vs 6000/min, and *plausibly
     similar* prices that would not look wrong if interleaved (ADR-0015 finding
     3). Testnet evidence is never production evidence.
-16. **One scheduler per database.** Two hosts writing the same database both
+17. **One scheduler per database.** Two hosts writing the same database both
     append evidence and double-count accrual. Not enforced in code.
-17. **Integration tests read committed rows.** They roll back their own
+18. **Integration tests read committed rows.** They roll back their own
     transaction but see real data. Never assert on a global "latest"/"count" —
     assert on deltas or scope to a row the test created.
-18. **Brazilian record-keeping is a stated requirement with no implementation.**
+19. **Brazilian record-keeping is a stated requirement with no implementation.**
     The ledger must eventually export per-trade records with BRL valuation at
     trade time. Design for it when the ledger lands (Phase 7).
-19. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
+20. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
     itself a risk limit; there is no code for it.
+21. **The dev host's Docker stack is not always up.** The crypto Postgres exited
+    while another project's stack was started on 2026-08-15, and every cron tick
+    failed closed until `docker compose up -d` restored it. Nothing supervises
+    the containers.
 
 ## Backlog (next increments, roughly ordered)
 
 1. **Begin Phase 4** — funding-persistence baseline over the ingested research
    range, with the settlement-time interval and the skipped-settlement hole
    (limitations 7 and 8) handled explicitly rather than assumed away.
-2. **Install the collector schedule** from `scripts/crontab.example` on exactly
-   one host and observe its durable health over wall-clock time. Live freshness
-   is currently stale (limitation 12).
+2. **Observe the installed collector schedule** over wall-clock time, and decide
+   whether live collection should widen beyond BTCUSDT to the research universe
+   (limitation 12).
 3. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
    recorded corpus.
 4. Validate the remaining freshness tolerances (limitation 14) against measured
