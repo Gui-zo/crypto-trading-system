@@ -20,8 +20,10 @@ guessing.
 > settlement the venue skipped (ADR-0020). **Phase 4 has begun:** the funding-
 > persistence baseline beats naive by +0.294 and climatology by +0.180 on the
 > research history, which is why the model must now clear both gates
-> (ADR-0021) — archive replay is worth zero toward promotion. There is no risk
-> engine and no code path that can submit an order.
+> (ADR-0021) — archive replay is worth zero toward promotion. 48,322 immutable
+> predictions are recorded under a content-addressed model version, and no
+> champion is promoted. There is no risk engine and no code path that can submit
+> an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
 
@@ -184,7 +186,7 @@ v1 and will break in confusing ways.
 ### Verification — all four must pass before any commit
 
 ```bash
-uv run pytest -q          # 499 tests
+uv run pytest -q          # 535 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations

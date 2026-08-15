@@ -61,14 +61,20 @@ artifacts, every symbol exactly complete in both spot and USD-M and replaying
 with zero inserts. Six quality assessments remain `BLOCKED`, all true positives:
 two mid-history funding-cadence changes and a settlement the venue skipped on
 2026-06-24, confirmed against REST.
-Phase 4 has begun: `packages/domain/funding_model.py` implements the ADR-0004
-target, case construction from observed settlements, the naive baseline, an
-expanding conditional-persistence model, a climatology baseline, and walk-forward
-scoring under a resolution-time leakage rule. On the research history the model
-beats naive by +0.294 and climatology by +0.180 at a 0 bps threshold (ECE 0.028,
-all 19 symbols informative), which is why kill criterion 2 was tightened to
-require both (ADR-0021). None of that is promotion evidence — it is archive
-replay, worth zero under ADR-0012.
+Phase 4 is mostly built. `packages/domain/funding_model.py` implements the
+ADR-0004 target, case construction from observed settlements, the naive baseline,
+an expanding conditional-persistence model, a climatology baseline, and
+walk-forward scoring under a resolution-time leakage rule. On the research
+history the model beats naive by +0.294 and climatology by +0.180 at a 0 bps
+threshold (ECE 0.028, all 19 symbols informative), which is why kill criterion 2
+was tightened to require both (ADR-0021). Model identity is content-addressed
+over source digest, data snapshot, and parameters; registration refuses an
+uncommitted model file. `model-baseline` has run over the full research history,
+recording **48,322 immutable predictions** and an evaluation with per-symbol and
+per-interval slices, and replays with zero inserts. **No champion is promoted** —
+that is a human decision, and sizing must never consult a model that has none.
+None of this is promotion evidence: it is archive replay, worth zero under
+ADR-0012.
 **There is still no risk engine and no code path that can submit an
 order.** Every promotion gate reads
 `UNAVAILABLE`, correctly, because the system has never traded.
@@ -84,7 +90,7 @@ hold. No later phase is inferred from an earlier component existing.
 | 1 — Read-only Binance integration | REST + WebSocket ingestion, tolerant schemas, raw retention, rate-limit budget, reconnect/gap tests, live-verified against production read-only | ✅ **Done** (ADR-0015) |
 | 2 — Instrument and margin specification | `exchangeInfo` filters, `leverageBracket` tiers, per-symbol funding schedule, versioned and fail-closed on change | ✅ **Done** — signed production capture reconciled and exact catalog hash approved (ADR-0018) |
 | 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | ✅ **Done** — 19-symbol, 24-month research range ingested and verified complete (ADR-0019, ADR-0020) |
-| 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | 🟡 **Partial** — pure baseline, both gates, and the leakage rule land; persistence, provenance, and champion registry do not (ADR-0021) |
+| 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | 🟡 **Partial** — baseline, both gates, provenance, immutable predictions, evaluations, and the champion registry all land and run; **no champion has been promoted**, which is a human decision (ADR-0021) |
 | 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | ⬜ Not started |
 | 6 — Historical backtester | Leakage-free replay, realistic fill/slippage, funding accrual, benchmark comparison | ⬜ Not started |
 | 7 — Paper trading | Live-data two-leg simulation, mark-to-market, **reconciliation against a read-only real account**, dashboards, prospective evidence | ⬜ Not started |
@@ -109,6 +115,8 @@ packages/domain/            Pure logic. No framework, DB, or venue imports.
   precision.py              Decimal discipline, filter quantization (ADR-0011)
   instrument.py             Identity + exact filters/funding/margin catalog
   market_data.py            Mark price, funding, book ticker, kline observations
+  funding_model.py          Phase-4 target, cases, baselines, walk-forward skill
+  model_provenance.py       Content-addressed model identity (ADR-0021)
   errors.py                 Domain exception base
 packages/venue_binance/     Read-only venue adapter. No order path exists.
   endpoints.py              Base URLs and paths — one place to correct routing
@@ -120,15 +128,17 @@ packages/venue_binance/     Read-only venue adapter. No order path exists.
   client.py                 REST; public data + signed read-only margin brackets
   archive.py                Checksum-verified production funding/kline archives
   ws_client.py              Combined-stream consumer, reconnect + gap detection
+packages/modeling/          Provenance capture; touches Git and the filesystem
+  provenance.py             Source digest, clean-tree check, data snapshots
 packages/config/            Settings (pydantic-settings) + SecretProvider
 packages/storage/           Immutable content-addressed raw-payload store
 packages/observability/     JSON logging with credential redaction
-packages/db/                Audit, catalog, market history, and quality repos
+packages/db/                Audit, catalog, market history, quality, and model repos
 apps/cli/main.py            Every command; owns the transaction
-migrations/                 Alembic (3 migrations through 62848a719f99)
+migrations/                 Alembic (4 migrations through 3f4619e0553e)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
 scripts/crontab.example     Explicit BTC live-collector/watchdog schedule
-tests/                      499 unit + integration + recorded contracts
+tests/                      535 unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 
@@ -154,6 +164,9 @@ The governance surface plus the Phase-1–3 read-only venue/data commands.
 | `record-funding` | Persist settled funding plus a current mark/index snapshot |
 | `record-prices` | Persist current mark/index and spot/USD-M best books |
 | `market-data-status` | Persisted row/artifact counts, unresolved vs superseded quality blocks, live freshness |
+| `model-baseline` | Walk the funding-persistence baseline and record predictions + evidence |
+| `model-status` | Model versions, prediction/evaluation counts, current champion |
+| `model-promote` | Append a champion PROMOTE/RETIRE for an exact model hash |
 
 Planned, each landing in its phase: `daily-sync`, `carry-scan`, `paper-trade`,
 `paper-cycle`, `paper-report`, `reconcile`, `calibration`, `backtest`.
@@ -174,6 +187,11 @@ Planned, each landing in its phase: `daily-sync`, `carry-scan`, `paper-trade`,
 | `mark_price_snapshots` | Point-in-time mark/index/current-funding snapshots | ✅ |
 | `book_ticker_snapshots` | Spot/USD-M best bid/ask observations | ✅ |
 | `market_data_quality_assessments` | Durable PASS/BLOCKED gap/duplicate/conflict verdicts | ✅ |
+| `model_versions` | Immutable content-addressed model identity + full provenance | n/a (code identity) |
+| `funding_predictions` | Immutable per-decision forecasts, keyed by target as well | ✅ |
+| `model_evaluations` | Calibration + both skill scores; research vs promotion-eligible | ✅ |
+| `model_evaluation_slices` | Per-symbol and per-interval skill for one evaluation | via evaluation |
+| `model_champion_events` | Append-only PROMOTE/RETIRE; latest event is the champion | ✅ |
 
 Every market-keyed table added later **must** carry `environment` (ADR-0010).
 
@@ -254,12 +272,20 @@ wrong conclusions from the numbers above.
     while another project's stack was started on 2026-08-15, and every cron tick
     failed closed until `docker compose up -d` restored it. Nothing supervises
     the containers.
+22. **Three `funding-persistence-v1` model versions exist; only the newest is
+    meaningful.** Before 2026-08-15 the identity hash included the Git commit, so
+    two unrelated commits minted fresh versions and re-recorded every prediction
+    (144,966 rows across three identities instead of 48,322). Identity is now the
+    source digest, data snapshot, and parameters; the commit is retained as origin
+    only. The superseded rows are truthful records of what those identities
+    computed and are kept, because append-only means append-only. Use
+    `b4c7fca99d85...`.
 
 ## Backlog (next increments, roughly ordered)
 
-1. **Begin Phase 4** — funding-persistence baseline over the ingested research
-   range, with the settlement-time interval and the skipped-settlement hole
-   (limitations 7 and 8) handled explicitly rather than assumed away.
+1. **Finish Phase 4** — decide whether to promote a champion on research
+   evidence, then widen live collection beyond BTCUSDT so a paper campaign has a
+   live series for the symbols the model was fit on (limitation 12).
 2. **Observe the installed collector schedule** over wall-clock time, and decide
    whether live collection should widen beyond BTCUSDT to the research universe
    (limitation 12).
