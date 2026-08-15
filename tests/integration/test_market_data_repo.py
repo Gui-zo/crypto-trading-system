@@ -204,6 +204,52 @@ async def test_funding_gap_across_two_archive_files_is_detected(
     assert second.gaps == 1
 
 
+async def test_blocked_assessment_stops_counting_once_a_later_pass_supersedes_it(
+    db_session: AsyncSession,
+) -> None:
+    """A gap that later ingestion closes must not read as a permanent defect.
+
+    Backfilling into a range that already holds a distant island blocks on the
+    forward boundary. That evidence is correct when written and stays in the
+    append-only record, but re-assessing the same artifact over the completed
+    range supersedes it. Counted as deltas: `status()` is a global query.
+    """
+    symbol = f"TST{uuid.uuid4().hex[:12].upper()}"
+    repository = MarketDataRepository(db_session, environment="testnet")
+    before = await repository.status()
+
+    near = artifact(symbol, source=MarketDataSource.ARCHIVE)
+    assert (
+        await repository.ingest_funding(
+            (funding(symbol, 0), funding(symbol, 8)), artifact=near
+        )
+    ).status is DataQualityStatus.PASS
+
+    far = artifact(symbol, source=MarketDataSource.ARCHIVE)
+    island = await repository.ingest_funding((funding(symbol, 32),), artifact=far)
+    assert island.status is DataQualityStatus.BLOCKED
+    assert island.gaps == 1
+
+    blocked = await repository.status()
+    assert blocked.blocked_assessments - before.blocked_assessments == 1
+    assert blocked.superseded_blocked_assessments == before.superseded_blocked_assessments
+
+    middle = artifact(symbol, source=MarketDataSource.ARCHIVE)
+    assert (
+        await repository.ingest_funding(
+            (funding(symbol, 16), funding(symbol, 24)), artifact=middle
+        )
+    ).status is DataQualityStatus.PASS
+
+    replay = await repository.ingest_funding((funding(symbol, 32),), artifact=far)
+    assert replay.status is DataQualityStatus.PASS
+    assert replay.inserted == 0
+
+    after = await repository.status()
+    assert after.blocked_assessments == before.blocked_assessments
+    assert after.superseded_blocked_assessments - before.superseded_blocked_assessments == 1
+
+
 async def test_empty_source_is_a_durable_block_not_a_silent_pass(
     db_session: AsyncSession,
 ) -> None:

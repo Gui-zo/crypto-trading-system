@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from db.models import (
     BookTickerSnapshotRecord,
@@ -145,6 +146,7 @@ class MarketDataStatus:
     book_snapshots: int
     quality_assessments: int
     blocked_assessments: int
+    superseded_blocked_assessments: int
     latest_funding_at: datetime | None
     latest_prices_at: datetime | None
 
@@ -499,15 +501,30 @@ class MarketDataRepository:
         return tuple(canonical)
 
     async def status(self) -> MarketDataStatus:
-        blocked = int(
-            (
-                await self._session.execute(
-                    select(func.count(MarketDataQualityAssessmentRecord.id)).where(
-                        MarketDataQualityAssessmentRecord.environment == self._environment,
-                        MarketDataQualityAssessmentRecord.status == DataQualityStatus.BLOCKED.value,
-                    )
-                )
-            ).scalar_one()
+        # A BLOCKED assessment is point-in-time evidence about the rows visible when
+        # it ran. Re-ingesting the same artifact once the surrounding range is
+        # complete appends a PASS that supersedes it. The audit row is never edited,
+        # so an operator count must exclude the superseded ones or a transient
+        # ingest-order gap would read as a permanent data defect.
+        later = aliased(MarketDataQualityAssessmentRecord)
+        superseded = (
+            select(1)
+            .where(
+                later.environment == MarketDataQualityAssessmentRecord.environment,
+                later.source_artifact_id
+                == MarketDataQualityAssessmentRecord.source_artifact_id,
+                later.status == DataQualityStatus.PASS.value,
+                later.evaluated_at > MarketDataQualityAssessmentRecord.evaluated_at,
+            )
+            .exists()
+        )
+        blocked_base = select(func.count(MarketDataQualityAssessmentRecord.id)).where(
+            MarketDataQualityAssessmentRecord.environment == self._environment,
+            MarketDataQualityAssessmentRecord.status == DataQualityStatus.BLOCKED.value,
+        )
+        blocked = int((await self._session.execute(blocked_base.where(~superseded))).scalar_one())
+        superseded_blocked = int(
+            (await self._session.execute(blocked_base.where(superseded))).scalar_one()
         )
         return MarketDataStatus(
             artifacts=await self._count_scoped(MarketDataSourceArtifactRecord),
@@ -517,6 +534,7 @@ class MarketDataRepository:
             book_snapshots=await self._count_scoped(BookTickerSnapshotRecord),
             quality_assessments=await self._count_scoped(MarketDataQualityAssessmentRecord),
             blocked_assessments=blocked,
+            superseded_blocked_assessments=superseded_blocked,
             latest_funding_at=await self.latest_funding_at(),
             latest_prices_at=await self.latest_prices_at(),
         )

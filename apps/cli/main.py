@@ -975,6 +975,7 @@ async def cmd_market_data_status(settings: Settings, args: argparse.Namespace) -
         "book_snapshots": status.book_snapshots,
         "quality_assessments": status.quality_assessments,
         "blocked_assessments": status.blocked_assessments,
+        "superseded_blocked_assessments": status.superseded_blocked_assessments,
         "latest_funding_at": status.latest_funding_at,
         "latest_prices_at": status.latest_prices_at,
     }

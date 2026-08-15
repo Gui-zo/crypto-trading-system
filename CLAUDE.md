@@ -12,7 +12,7 @@ command reference, what lands in which table, and — most importantly — a num
 **Known limitations** list that exists to stop you drawing wrong conclusions.
 Do not skip that section.
 
-Decision history is in [`docs/adr/`](docs/adr/) (19 ADRs). The six most
+Decision history is in [`docs/adr/`](docs/adr/) (20 ADRs). The seven most
 load-bearing:
 
 - **[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md)** — the
@@ -41,6 +41,11 @@ load-bearing:
   archive URLs are replaceable, archive/REST schemas differ, and live freshness
   follows retained REST artifacts rather than historical rows. Read it before
   changing backfill, canonical series, or producer health.
+- **[ADR-0020](docs/adr/0020-research-backfill-and-funding-cadence-mutability.md)** —
+  the research universe and range, and what two years of real history proved: a
+  symbol's funding cadence **changes over time**, the venue **skips settlements**,
+  and a `BLOCKED` quality assessment is point-in-time evidence that a later pass
+  can supersede. Read it before modelling funding or trusting a blocked count.
 
 Update `docs/STATUS.md` and the relevant README section whenever something lands,
 and write an ADR for any material decision.
@@ -59,8 +64,9 @@ a price the risk engine approved.
 
 ## Toolchain
 
-- **Always run via `uv`** at `~/.local/bin/uv`. System Python is 3.11 with
-  pydantic v1 and will break in confusing ways — never use it.
+- **Always run via `uv`** — take it from `PATH` (`command -v uv`) rather than a
+  hardcoded location; it is not always under `~/.local/bin`. System Python is
+  3.11 with pydantic v1 and will break in confusing ways — never use it.
 - Commands: `uv run python apps/cli/main.py <command>`.
 - Postgres + Redis via `docker compose up -d`. **Ports are 5433/6380**, offset
   from the sibling `automated-trading-system` stack (5432/6379) so both run side
@@ -79,7 +85,7 @@ a price the risk engine approved.
 ## Verification (all four must pass before committing)
 
 ```bash
-uv run pytest -q          # 476 tests
+uv run pytest -q          # 477 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -105,7 +111,9 @@ scope the query to a row you created. This bit the sibling repo repeatedly.
   Corrections create a new artifact; halts clear with an audited event.
 - Every CLI command writes an `operational_job_runs` row before it starts and
   closes it after, so a crash leaves RUNNING residue for the watchdog.
-- All timestamps are timezone-aware **UTC**. Funding settles on UTC boundaries.
+- All timestamps are timezone-aware **UTC**. Funding settles *near* UTC
+  boundaries — the venue's published `calc_time` carries millisecond jitter, so
+  compare with a tolerance, never for equality (ADR-0020).
 - **Do not read the user's `.env` or any secret file.**
 
 ## Working on the venue adapter
@@ -114,6 +122,15 @@ scope the query to a row you created. This bit the sibling repo repeatedly.
   442 of 742 symbols were 4-hourly on 2026-08-09, 296 were 8-hourly, 4 hourly
   (ADR-0016). There is no "the funding interval" in this codebase and there
   should never be. Use `max_funding_age_for(interval_hours)` for freshness.
+- **Nor is it constant for one symbol over time.** ALICEUSDT ran 8h, then hourly,
+  then 4h within the research range (ADR-0020). For any historical settlement use
+  the archive's own `funding_interval_hours`, never today's catalog value applied
+  backwards.
+- **A scheduled settlement may not exist.** The venue skipped 2026-06-24 04:00 UTC
+  for every 4-hourly symbol, confirmed against REST. Accrual must read the
+  settlements that happened, not the ones the schedule implies.
+- **Archive `calc_time` is not the boundary** — it carries millisecond jitter.
+  Never compare a funding timestamp for exact equality with a UTC boundary.
 - **The universe is filtered**: `TRADING` + `PERPETUAL` + USDT quote. 153 of 854
   symbols are `TRADIFI_PERPETUAL` — tokenised equities and metals (AAPLUSDT,
   TSLAUSDT, XAUUSDT) — and nothing but `contractType` distinguishes them.

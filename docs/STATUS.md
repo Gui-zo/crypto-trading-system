@@ -6,7 +6,7 @@
 > factual; when work completes, move it from **Backlog** to the relevant phase
 > entry.
 
-_Last updated: 2026-08-11 (Phase 3 partial; bounded production ingest verified)_
+_Last updated: 2026-08-15 (Phase 3 complete; research backfill ingested)_
 
 > Every figure below is a dated snapshot. Run **`dashboard`** for the live
 > operator view — connectivity, kill switches, run history, and promotion-gate
@@ -31,20 +31,22 @@ runtime.
 Locked decisions: funding carry as the edge thesis (ADR-0004), funding-cadence
 decisions (ADR-0005), local-first (ADR-0002), prospective-only promotion gates
 (ADR-0012), venue-environment scoping from day one (ADR-0010), a filtered
-instrument universe (ADR-0016), content-addressed catalog review (ADR-0017).
-Full rationale in `docs/adr/` (19 ADRs).
-**ADRs 0015, 0018, and 0019 are the load-bearing venue records** — public REST,
-authenticated REST, and archive documentation met reality there.
+instrument universe (ADR-0016), content-addressed catalog review (ADR-0017),
+the research universe and range (ADR-0020).
+Full rationale in `docs/adr/` (20 ADRs).
+**ADRs 0015, 0018, 0019, and 0020 are the load-bearing venue records** — public
+REST, authenticated REST, archive documentation, and two years of ingested
+history met reality there.
 
 ## Current state (one paragraph)
 
-**Phases 0–2 are complete; Phase 3 is partial.**
+**Phases 0–3 are complete.**
 Phase 0 built the governance surface. Phase 1 added the public read-only Binance
 adapter, raw retention, rate-limit budgeting, and WebSocket gap handling. Phase 2
 added the signed read-only maintenance-bracket path, exact filter/funding/margin
 domain values, canonical SHA-256 catalogs, immutable observations, and
 append-only human review. A changed catalog returns to `PENDING_REVIEW`; it never
-falls back to an older approved hash. Phase 3 now has checksum-verified monthly
+falls back to an older approved hash. Phase 3 has checksum-verified monthly
 funding/kline archives, independent archive/REST provenance, exact Decimal and
 timestamp persistence, quality assessments, live funding/price collectors, and
 real producer health checks. The public reconciliation produced seven
@@ -52,9 +54,13 @@ findings in ADR-0015; the signed production capture succeeded and its findings
 are recorded in ADR-0018; archive reconciliation is in ADR-0019. The resulting
 527-specification catalog is `APPROVED` under exact hash
 `d3a5898667985f09ce7d6ea9e7c0be1b6b759cca499833f8cbbe71687e659787`.
-The bounded production proof stored 93 July BTC funding settlements plus 744
-USD-M and 744 spot 1h candles, replayed idempotently, recorded a live REST cycle,
-and passed all eight health checks with zero blocked quality assessments.
+The research backfill (ADR-0020) holds **48,905 archive funding settlements and
+665,760 closed 1h candles** over `[2024-08-01, 2026-08-01)` for 19 symbols — 15
+eight-hourly majors plus 4 four-hourly symbols — across 1,381 immutable
+artifacts, every symbol exactly complete in both spot and USD-M and replaying
+with zero inserts. Six quality assessments remain `BLOCKED`, all true positives:
+two mid-history funding-cadence changes and a settlement the venue skipped on
+2026-06-24, confirmed against REST.
 **There is still no model, no risk engine, and no code path that can submit an
 order.** Every promotion gate reads
 `UNAVAILABLE`, correctly, because the system has never traded.
@@ -69,7 +75,7 @@ hold. No later phase is inferred from an earlier component existing.
 | 0 — Governance and repository foundation | Reproducible env, CI, structured logging, audit controls, mode ladder, ported safety spine | ✅ **Done** |
 | 1 — Read-only Binance integration | REST + WebSocket ingestion, tolerant schemas, raw retention, rate-limit budget, reconnect/gap tests, live-verified against production read-only | ✅ **Done** (ADR-0015) |
 | 2 — Instrument and margin specification | `exchangeInfo` filters, `leverageBracket` tiers, per-symbol funding schedule, versioned and fail-closed on change | ✅ **Done** — signed production capture reconciled and exact catalog hash approved (ADR-0018) |
-| 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | 🟡 **Partial** — implementation + bounded BTC production proof complete; selected full history not yet backfilled (ADR-0019) |
+| 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | ✅ **Done** — 19-symbol, 24-month research range ingested and verified complete (ADR-0019, ADR-0020) |
 | 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | ⬜ Not started |
 | 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | ⬜ Not started |
 | 6 — Historical backtester | Leakage-free replay, realistic fill/slippage, funding accrual, benchmark comparison | ⬜ Not started |
@@ -114,7 +120,7 @@ apps/cli/main.py            Every command; owns the transaction
 migrations/                 Alembic (3 migrations through 62848a719f99)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
 scripts/crontab.example     Explicit BTC live-collector/watchdog schedule
-tests/                      476 unit + integration + recorded contracts
+tests/                      477 unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 
@@ -139,7 +145,7 @@ The governance surface plus the Phase-1–3 read-only venue/data commands.
 | `backfill` | Plan or ingest checksum-verified monthly archives over `[start,end)` |
 | `record-funding` | Persist settled funding plus a current mark/index snapshot |
 | `record-prices` | Persist current mark/index and spot/USD-M best books |
-| `market-data-status` | Persisted row/artifact counts, quality blocks, and live freshness |
+| `market-data-status` | Persisted row/artifact counts, unresolved vs superseded quality blocks, live freshness |
 
 Planned, each landing in its phase: `daily-sync`, `carry-scan`, `paper-trade`,
 `paper-cycle`, `paper-report`, `reconcile`, `calibration`, `backtest`.
@@ -182,46 +188,66 @@ wrong conclusions from the numbers above.
 4. **Rate-limit failure behaviour is unverified.** 429, 418, `Retry-After`, and
    ban duration are all inferred from documentation; the success-path headers are
    recorded.
-5. **Phase 3 is not a full-history claim.** Only July 2026 BTC funding and 1h
-   spot/USD-M klines have been production-ingested as a bounded proof. Choose and
-   backfill the complete research range/universe before Phase 3 can be marked done.
-6. **The liquidation-distance invariant is stated, not implemented** (ADR-0009).
-   Its promotion gate exists; the risk engine does not. Phase 5.
-7. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
-   blocks on `UNKNOWN` because nothing can yet produce `RECONCILED`. Phase 7.
-8. **The cron file is an example, not installed state.** `health-check` is real
-   and passed after the manual BTC live cycle, but freshness will age out unless
-   `scripts/crontab.example` is installed on exactly one scheduler host.
-9. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
-   exists. See ADR-0012 for why a naive construction would read `PASS`.
-10. **Freshness tolerances are still mostly guesses.** The funding tolerance is
+5. **The research dataset is 19 symbols, not the universe.** `[2024-08-01,
+   2026-08-01)` for 15 eight-hourly majors and 4 four-hourly symbols (ADR-0020).
+   That is 19 of 527 approved specifications. Any claim about venue-wide carry
+   behaviour is unsupported by this data.
+6. **The research dataset is survivorship-biased.** It was selected from symbols
+   trading in August 2026. Perpetuals that paid rich funding and then delisted
+   are absent entirely, which flatters any carry backtest built on it. Nothing in
+   the catalog records delisted symbols, so this cannot currently be corrected.
+7. **The funding interval changes within a symbol's history.** ALICEUSDT ran 8h,
+   then 1h, then 4h inside the research range; ACEUSDT dropped to 1h for eleven
+   days. Use the archive's own `funding_interval_hours` for the settlement being
+   priced — never the current catalog value applied retroactively (ADR-0020).
+8. **The venue skips settlements.** The 2026-06-24 04:00 UTC settlement does not
+   exist for any four-hourly symbol in the dataset, confirmed independently
+   against REST. Code that assumes a settlement at every scheduled boundary will
+   over-accrue carry (ADR-0020).
+9. **Archive funding timestamps are not on the boundary.** The published
+   `calc_time` carries millisecond jitter (observed ±5 ms). Gap detection allows
+   ±1 minute; never test a funding timestamp for exact boundary equality.
+10. **The liquidation-distance invariant is stated, not implemented** (ADR-0009).
+    Its promotion gate exists; the risk engine does not. Phase 5.
+11. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
+    blocks on `UNKNOWN` because nothing can yet produce `RECONCILED`. Phase 7.
+12. **The cron file is an example, not installed state.** `health-check` is real
+    and passed after the manual BTC live cycle, but freshness will age out unless
+    `scripts/crontab.example` is installed on exactly one scheduler host. Live
+    collector freshness has been stale since 2026-08-11 for exactly this reason;
+    the archive backfill does not refresh it.
+13. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
+    exists. See ADR-0012 for why a naive construction would read `PASS`.
+14. **Freshness tolerances are still mostly guesses.** The funding tolerance is
     now derived from the venue's own per-symbol interval (ADR-0016), but the
     60 s mark-price, 5 s order-pricing, and 60 s account-state figures have not
     been validated against recorded latency.
-11. **Testnet and production are different venues in every way that matters.**
+15. **Testnet and production are different venues in every way that matters.**
     854 symbols vs 731, weight limit 2400/min vs 6000/min, and *plausibly
     similar* prices that would not look wrong if interleaved (ADR-0015 finding
     3). Testnet evidence is never production evidence.
-12. **One scheduler per database.** Two hosts writing the same database both
+16. **One scheduler per database.** Two hosts writing the same database both
     append evidence and double-count accrual. Not enforced in code.
-13. **Integration tests read committed rows.** They roll back their own
+17. **Integration tests read committed rows.** They roll back their own
     transaction but see real data. Never assert on a global "latest"/"count" —
     assert on deltas or scope to a row the test created.
-14. **Brazilian record-keeping is a stated requirement with no implementation.**
+18. **Brazilian record-keeping is a stated requirement with no implementation.**
     The ledger must eventually export per-trade records with BRL valuation at
     trade time. Design for it when the ledger lands (Phase 7).
-15. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
+19. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
     itself a risk limit; there is no code for it.
 
 ## Backlog (next increments, roughly ordered)
 
-1. **Finish Phase 3 history.** Select the research date range/universe, dry-run
-   it in bounded batches, then ingest all required spot/USD-M klines and funding.
+1. **Begin Phase 4** — funding-persistence baseline over the ingested research
+   range, with the settlement-time interval and the skipped-settlement hole
+   (limitations 7 and 8) handled explicitly rather than assumed away.
 2. **Install the collector schedule** from `scripts/crontab.example` on exactly
-   one host and observe its durable health over wall-clock time.
+   one host and observe its durable health over wall-clock time. Live freshness
+   is currently stale (limitation 12).
 3. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
    recorded corpus.
-4. Validate the remaining freshness tolerances (limitation 10) against measured
+4. Validate the remaining freshness tolerances (limitation 14) against measured
    latency.
 5. Immutable model provenance — port the *pattern* from the sibling's
    ADR-0009/0015. Instrument catalog versioning now exists as the local pattern.
@@ -231,7 +257,7 @@ wrong conclusions from the numbers above.
 All four must pass before any commit:
 
 ```bash
-uv run pytest -q          # 476 tests
+uv run pytest -q          # 477 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations

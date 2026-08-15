@@ -10,14 +10,15 @@ live capital is stepwise and gated by explicit, testable criteria. When unsure,
 **fail closed** — reject on missing, stale, or ambiguous input rather than
 guessing.
 
-> **Status: Phases 0–2 complete; Phase 3 is partial.** Checksum-verified monthly
-> archive ingestion, source-aware market-data persistence, live funding/price
-> collectors, and producer health checks are built. A bounded July BTC proof
-> persisted 93 settlements and 1,488 closed candles with zero gaps/conflicts,
-> then passed an idempotent replay and live REST cycle. Phase 3 is not complete
-> until the selected research universe and historical range are fully
-> backfilled. There is no model, no risk engine, and no code path that can submit
-> an order.
+> **Status: Phases 0–3 complete.** Checksum-verified monthly archive ingestion,
+> source-aware market-data persistence, live funding/price collectors, and
+> producer health checks are built and exercised. The research backfill holds
+> 48,905 funding settlements and 665,760 closed 1h candles over
+> `[2024-08-01, 2026-08-01)` for 19 symbols — every one exactly complete in both
+> spot and USD-M, replaying with zero inserts. Six quality assessments remain
+> `BLOCKED`, all true positives: two mid-history funding-cadence changes and one
+> settlement the venue skipped (ADR-0020). There is no model, no risk engine, and
+> no code path that can submit an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
 
@@ -47,11 +48,19 @@ demand. No directional prediction anywhere. The model layer forecasts *funding
 persistence*, which is a genuine probabilistic problem, so the sibling's entire
 calibration apparatus ports unchanged.
 
-Funding settles on a fixed schedule that is **per symbol**: measured on the live
-venue, 442 of 742 symbols settle every 4 hours, 296 every 8, and 4 every hour
-([ADR-0016](docs/adr/0016-instrument-universe-and-funding-cadence.md)). BTC and
-ETH are 8-hourly, which is why an 8-hour assumption looks right until the
+Funding settles on a published schedule that is **per symbol**: measured on the
+live venue, 442 of 742 symbols settle every 4 hours, 296 every 8, and 4 every
+hour ([ADR-0016](docs/adr/0016-instrument-universe-and-funding-cadence.md)). BTC
+and ETH are 8-hourly, which is why an 8-hour assumption looks right until the
 universe widens.
+
+That schedule is not fixed over time, and it is not always kept. A symbol's
+cadence changes mid-history — ALICEUSDT ran 8h, then hourly, then 4h inside a
+two-year window — and the venue occasionally skips a settlement outright, as it
+did at 2026-06-24 04:00 UTC. Both are measured facts from the ingested history
+([ADR-0020](docs/adr/0020-research-backfill-and-funding-cadence-mutability.md)),
+so accrual must use the interval in force at each settlement and must never
+assume a settlement exists because the schedule says it should.
 
 It is a crowded, well-known trade. That is fine — the goal is a *defensible*
 edge, not an undiscovered one. Four falsifiable kill criteria are recorded in
@@ -172,7 +181,7 @@ v1 and will break in confusing ways.
 ### Verification — all four must pass before any commit
 
 ```bash
-uv run pytest -q          # 476 tests
+uv run pytest -q          # 477 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -237,7 +246,7 @@ Commands: `dashboard`, `status`, `safety-status`, `safety-halt`, `safety-clear`,
 |---|---|
 | [`docs/STATUS.md`](docs/STATUS.md) | **Start here.** Current state, phases, commands, known limitations, backlog |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement for AI sessions picking this up cold |
-| [`docs/adr/`](docs/adr/) | 19 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, and **ADR-0019** record REST, authenticated, and archive first contact |
+| [`docs/adr/`](docs/adr/) | 20 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, **ADR-0019**, and **ADR-0020** record REST, authenticated, archive, and research-history first contact |
 | [`tests/fixtures/binance/`](tests/fixtures/binance/) | Recorded venue responses, and an honest list of what is still unverified |
 | [`docs/founding-readme.md`](docs/founding-readme.md) | The original specification, archived verbatim |
 
