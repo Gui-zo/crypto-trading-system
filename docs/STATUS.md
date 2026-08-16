@@ -91,7 +91,7 @@ hold. No later phase is inferred from an earlier component existing.
 | 2 — Instrument and margin specification | `exchangeInfo` filters, `leverageBracket` tiers, per-symbol funding schedule, versioned and fail-closed on change | ✅ **Done** — signed production capture reconciled and exact catalog hash approved (ADR-0018) |
 | 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | ✅ **Done** — 19-symbol, 24-month research range ingested and verified complete (ADR-0019, ADR-0020) |
 | 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | ✅ **Done** — baseline, both gates, provenance, immutable predictions, evaluations, slices, and a promoted champion (ADR-0021) |
-| 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | 🟡 **Partial** — exact liquidation price and distance land, property-tested against the venue's own maintenance definition; carry economics, sizing, caps, and the margin buffer do not |
+| 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | 🟡 **Partial** — liquidation, carry, sizing, stress band, caps, buffer, and explainable refusals all land as pure domain logic, property-tested; no persistence, no CLI, and the cost inputs are caller-supplied rather than measured |
 | 6 — Historical backtester | Leakage-free replay, realistic fill/slippage, funding accrual, benchmark comparison | ⬜ Not started |
 | 7 — Paper trading | Live-data two-leg simulation, mark-to-market, **reconciliation against a read-only real account**, dashboards, prospective evidence | ⬜ Not started |
 | 8 — Testnet execution | Idempotent orders, cancellation, partial fills, restart recovery, order/fill streaming | ⬜ Not started |
@@ -118,6 +118,8 @@ packages/domain/            Pure logic. No framework, DB, or venue imports.
   funding_model.py          Phase-4 target, cases, baselines, walk-forward skill
   model_provenance.py       Content-addressed model identity (ADR-0021)
   liquidation.py            Exact liquidation prices from real margin tiers (ADR-0009)
+  carry.py                  Net carry in bps, on notional and on capital deployed
+  risk.py                   Sizing, the stress band, the caps, explainable refusals
   errors.py                 Domain exception base
 packages/venue_binance/     Read-only venue adapter. No order path exists.
   endpoints.py              Base URLs and paths — one place to correct routing
@@ -139,7 +141,7 @@ apps/cli/main.py            Every command; owns the transaction
 migrations/                 Alembic (4 migrations through 3f4619e0553e)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
 scripts/crontab.example     Explicit BTC live-collector/watchdog schedule
-tests/                      550 unit + integration + recorded contracts
+tests/                      576 unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 

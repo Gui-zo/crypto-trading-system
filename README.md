@@ -186,7 +186,7 @@ v1 and will break in confusing ways.
 ### Verification — all four must pass before any commit
 
 ```bash
-uv run pytest -q          # 550 tests
+uv run pytest -q          # 576 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
