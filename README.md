@@ -10,7 +10,7 @@ live capital is stepwise and gated by explicit, testable criteria. When unsure,
 **fail closed** — reject on missing, stale, or ambiguous input rather than
 guessing.
 
-> **Status: Phases 0–4 complete.** Checksum-verified monthly archive ingestion,
+> **Status: Phases 0–5 complete.** Checksum-verified monthly archive ingestion,
 > source-aware market-data persistence, live funding/price collectors, and
 > producer health checks are built and exercised. The research backfill holds
 > 48,905 funding settlements and 665,760 closed 1h candles over
@@ -23,7 +23,11 @@ guessing.
 > (ADR-0021) — archive replay is worth zero toward promotion. 48,322 immutable
 > predictions are recorded under a content-addressed model version, and
 > `funding-persistence-v1` is the promoted champion on that research evidence.
-> There is no risk engine and no code path that can submit an order.
+> **Phase 5 adds the risk engine** — exact liquidation from real margin tiers, a
+> floored stress band, a 2x leverage cap, an untouchable buffer, and refusals
+> that name the binding constraint. Its first run over the research universe
+> refused all 19 symbols: carry does not pay a round trip below roughly a
+> two-week hold. There is no code path that can submit an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
 
@@ -186,7 +190,7 @@ v1 and will break in confusing ways.
 ### Verification — all four must pass before any commit
 
 ```bash
-uv run pytest -q          # 576 tests
+uv run pytest -q          # 590 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations

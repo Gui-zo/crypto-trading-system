@@ -294,7 +294,7 @@ def size_position(
             outcomes,
             Constraint.NEGATIVE_CARRY,
             capital_multiple,
-            f"net carry {request.net_carry_bps} bps on capital does not pay for the trade",
+            f"net carry {request.net_carry_bps:.2f} bps on capital does not pay for the trade",
         )
 
     stress_quantity = max_quantity_for_stress_band(

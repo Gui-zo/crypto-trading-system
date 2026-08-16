@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from config.secrets import EnvSecretProvider, FileSecretProvider  # noqa: E402
 from config.settings import Settings, load_settings  # noqa: E402
+from db.carry_repo import CarryProposalRepository  # noqa: E402
 from db.engine import create_engine, create_session_factory  # noqa: E402
 from db.instrument_repo import (  # noqa: E402
     CatalogSourceArtifact,
@@ -58,6 +59,13 @@ from db.market_data_repo import (  # noqa: E402
 from db.model_repo import ModelRepository  # noqa: E402
 from db.operational_health_repo import OperationalHealthRepository  # noqa: E402
 from db.safety_repo import SafetyControlRepository  # noqa: E402
+from domain.carry import (  # noqa: E402
+    CarryInputs,
+    FeeSchedule,
+    breakeven_funding_rate,
+    estimate_carry,
+)
+from domain.errors import DomainError  # noqa: E402
 from domain.funding_model import (  # noqa: E402
     ExpandingPersistenceModel,
     FundingTarget,
@@ -72,7 +80,20 @@ from domain.funding_model import (  # noqa: E402
     score_by_symbol,
     walk_forward,
 )
-from domain.instrument import InstrumentReviewAction, VenueEnvironment  # noqa: E402
+from domain.instrument import (  # noqa: E402
+    ContractType,
+    FundingSchedule,
+    InstrumentRef,
+    InstrumentReviewAction,
+    InstrumentSpecification,
+    InstrumentStatus,
+    MaintenanceMarginTier,
+    MarginSchedule,
+    PriceFilter,
+    QuantityFilter,
+    VenueEnvironment,
+    VenueScope,
+)
 from domain.market_data import MarketDataSource  # noqa: E402
 from domain.modes import TradingMode, is_live, permits_new_orders  # noqa: E402
 from domain.operational_health import OperationalJobStatus  # noqa: E402
@@ -93,11 +114,17 @@ from domain.promotion import (  # noqa: E402
     binding_gate,
     wall_clock_gate,
 )
+from domain.risk import RiskLimits, SizingRequest, size_position  # noqa: E402
 from domain.safety import (  # noqa: E402
     SafetyControlAction,
     SafetyGateStatus,
     SafetyScope,
     SafetyScopeRef,
+)
+from domain.volatility import (  # noqa: E402
+    VolatilityError,
+    mean_funding_rate,
+    realized_volatility,
 )
 from modeling.provenance import capture, snapshot_observations  # noqa: E402
 from observability.logging import configure_logging  # noqa: E402
@@ -1347,6 +1374,250 @@ async def cmd_model_promote(settings: Settings, args: argparse.Namespace) -> int
 
 
 # ---------------------------------------------------------------------------
+# Phase-5 carry economics and risk engine
+# ---------------------------------------------------------------------------
+
+
+def _specification_from_catalog(symbol: str, raw: dict[str, object]) -> InstrumentSpecification:
+    """Rebuild an exact specification from the approved catalog JSON.
+
+    Every value comes back as its exact decimal text. Nothing is defaulted: a
+    catalog entry that cannot produce a complete specification must raise rather
+    than yield a partially-populated one that sizing would trust.
+    """
+    scope = VenueScope(venue="BINANCE", environment=VenueEnvironment(settings_environment()))
+    price_filter = raw["price_filter"]
+    quantity_filter = raw["quantity_filter"]
+    funding = raw["funding_schedule"]
+    margin = raw["margin_schedule"]
+    assert isinstance(price_filter, dict) and isinstance(quantity_filter, dict)
+    assert isinstance(funding, dict) and isinstance(margin, dict)
+    tiers = margin["tiers"]
+    assert isinstance(tiers, list)
+    return InstrumentSpecification(
+        instrument=InstrumentRef(scope=scope, symbol=symbol, market="usdm"),
+        status=InstrumentStatus(str(raw["status"])),
+        contract_type=ContractType(str(raw["contract_type"])),
+        base_asset=str(raw["base_asset"]),
+        quote_asset=str(raw["quote_asset"]),
+        margin_asset=str(raw["margin_asset"]),
+        price_filter=PriceFilter(
+            tick_size=parse_decimal(str(price_filter["tick_size"])),
+            min_price=parse_decimal(str(price_filter["min_price"])),
+            max_price=parse_decimal(str(price_filter["max_price"])),
+        ),
+        quantity_filter=QuantityFilter(
+            step_size=parse_decimal(str(quantity_filter["step_size"])),
+            min_quantity=parse_decimal(str(quantity_filter["min_quantity"])),
+            max_quantity=parse_decimal(str(quantity_filter["max_quantity"])),
+        ),
+        minimum_notional=parse_decimal(str(raw["minimum_notional"])),
+        funding_schedule=FundingSchedule(
+            interval_hours=int(str(funding["interval_hours"])),
+            rate_cap=parse_decimal(str(funding["rate_cap"])),
+            rate_floor=parse_decimal(str(funding["rate_floor"])),
+        ),
+        margin_schedule=MarginSchedule(
+            symbol=symbol,
+            tiers=tuple(
+                MaintenanceMarginTier(
+                    bracket=int(str(tier["bracket"])),
+                    initial_leverage=int(str(tier["initial_leverage"])),
+                    notional_floor=parse_decimal(str(tier["notional_floor"])),
+                    notional_cap=parse_decimal(str(tier["notional_cap"])),
+                    maintenance_margin_ratio=parse_decimal(str(tier["maintenance_margin_ratio"])),
+                    cumulative=parse_decimal(str(tier["cumulative"])),
+                )
+                for tier in tiers
+            ),
+        ),
+        liquidation_fee=parse_decimal(str(raw["liquidation_fee"])),
+    )
+
+
+_ENVIRONMENT_HOLDER: dict[str, str] = {}
+
+
+def settings_environment() -> str:
+    return _ENVIRONMENT_HOLDER.get("value", "production")
+
+
+async def cmd_carry_scan(settings: Settings, args: argparse.Namespace) -> int:
+    """Score every approved symbol for carry, size it, and record the decision.
+
+    Records refusals as well as approvals. A book that only stores what it did
+    cannot explain why it was flat, and under ADR-0009 a refusal is the risk
+    engine working rather than idling.
+    """
+    _ENVIRONMENT_HOLDER["value"] = settings.binance_env.value
+    limits = RiskLimits(
+        max_effective_leverage=parse_decimal(args.max_leverage),
+        stress_sigma_multiple=parse_decimal(args.stress_sigma),
+        stress_band_floor=parse_decimal(args.stress_floor),
+        margin_buffer_fraction=parse_decimal(args.margin_buffer),
+        max_instrument_notional=(
+            None
+            if args.max_instrument_notional is None
+            else parse_decimal(args.max_instrument_notional)
+        ),
+        max_total_notional=(
+            None if args.max_total_notional is None else parse_decimal(args.max_total_notional)
+        ),
+        max_group_notional=(
+            None if args.max_group_notional is None else parse_decimal(args.max_group_notional)
+        ),
+    )
+    fees = FeeSchedule(
+        perp_entry_bps=parse_decimal(args.perp_fee_bps),
+        perp_exit_bps=parse_decimal(args.perp_fee_bps),
+        spot_entry_bps=parse_decimal(args.spot_fee_bps),
+        spot_exit_bps=parse_decimal(args.spot_fee_bps),
+    )
+    capital = parse_decimal(args.capital)
+    horizon_hours = int(args.horizon_hours)
+
+    async def body(session: AsyncSession) -> int:
+        catalog = InstrumentCatalogRepository(session, environment=settings.binance_env.value)
+        status = await catalog.current_status()
+        if status is None or status.review_status.value != "APPROVED":
+            raise RuntimeError("current exact instrument catalog must be APPROVED")
+        specifications = await _approved_specifications(session, settings)
+        symbols = _selected_symbols(args, specifications)
+
+        market_data = MarketDataRepository(session, environment=settings.binance_env.value)
+        proposals = CarryProposalRepository(session, environment=settings.binance_env.value)
+
+        scanned = 0
+        approved = 0
+        skipped: list[tuple[str, str]] = []
+        for symbol in symbols:
+            raw = specifications[symbol]
+            try:
+                specification = _specification_from_catalog(symbol, raw)
+            except Exception as exc:
+                skipped.append((symbol, f"specification: {exc}"))
+                continue
+
+            closes = await market_data.kline_closes(symbol, limit=args.volatility_candles)
+            settlements = await market_data.funding_series(symbol)
+            if not closes:
+                skipped.append((symbol, "no kline history"))
+                continue
+            try:
+                volatility = realized_volatility(closes, periods_ahead=horizon_hours)
+                expected_rate = mean_funding_rate(
+                    [row.funding_rate for row in settlements[-args.funding_lookback :]]
+                )
+            except (VolatilityError, DomainError) as exc:
+                skipped.append((symbol, str(exc)))
+                continue
+
+            interval_hours = specification.funding_schedule.interval_hours
+            expected_settlements = horizon_hours // interval_hours
+            margin_fraction = Decimal(1) / limits.max_effective_leverage
+            inputs = CarryInputs(
+                expected_funding_rate=expected_rate,
+                settlements=expected_settlements,
+                slippage_bps=parse_decimal(args.slippage_bps),
+                basis_cost_bps=parse_decimal(args.basis_bps),
+                capital_cost_bps=parse_decimal(args.capital_cost_bps),
+                fees=fees,
+                perp_margin_fraction=margin_fraction,
+                margin_buffer_fraction=limits.margin_buffer_fraction,
+            )
+            estimate = estimate_carry(inputs)
+            price = closes[-1]
+            decision = size_position(
+                SizingRequest(
+                    specification=specification,
+                    mark_price=price,
+                    forecast_volatility=volatility,
+                    available_capital=capital,
+                    net_carry_bps=estimate.net_bps_on_capital,
+                ),
+                limits,
+            )
+            await proposals.record(
+                symbol=symbol,
+                catalog_sha256=status.content_sha256,
+                mark_price=price,
+                forecast_volatility=volatility,
+                expected_funding_rate=expected_rate,
+                settlements=expected_settlements,
+                estimate=estimate,
+                breakeven_funding_bps=breakeven_funding_rate(inputs),
+                decision=decision,
+                limits=limits,
+            )
+            scanned += 1
+            approved += int(decision.approved)
+            mark = "OK " if decision.approved else "no "
+            print(
+                f"{mark}{symbol:12} vol={volatility * 100:>6.2f}% "
+                f"band={decision.stress_band * 100:>6.2f}% "
+                f"funding={expected_rate * 10000:>7.4f}bps "
+                f"net={estimate.net_bps_on_capital:>9.2f}bps "
+                f"qty={decision.quantity} {decision.binding.value}"
+            )
+
+        for symbol, reason in skipped:
+            print(f"-- {symbol:12} skipped: {reason}")
+        print(
+            f"totals scanned={scanned} approved={approved} refused={scanned - approved} "
+            f"skipped={len(skipped)}"
+        )
+        print(
+            "NOTE: the expected funding rate is the trailing mean of settled rates, not the "
+            "champion model. Bridging P(funding >= threshold) to an expected rate is an "
+            "untested modelling decision (ADR-0021)."
+        )
+        return 0
+
+    return await _run_audited(settings, job_name="carry-scan", argv=sys.argv[1:], body=body)
+
+
+async def cmd_carry_status(settings: Settings, args: argparse.Namespace) -> int:
+    async with _session(settings) as session:
+        repository = CarryProposalRepository(session, environment=settings.binance_env.value)
+        counts = await repository.counts()
+        binding = await repository.binding_constraint_counts()
+        latest = await repository.latest(limit=args.limit)
+    report: dict[str, object] = {
+        "environment": settings.binance_env.value,
+        **counts,
+        "binding_constraints": dict(binding),
+    }
+    if args.json:
+        _print(
+            {
+                **report,
+                "latest": [
+                    {
+                        "symbol": item.symbol,
+                        "approved": item.approved,
+                        "quantity": str(item.quantity),
+                        "notional": str(item.notional),
+                        "net_carry_bps_on_capital": str(item.net_carry_bps_on_capital),
+                        "binding": item.binding_constraint,
+                        "explanation": item.explanation,
+                    }
+                    for item in latest
+                ],
+            },
+            as_json=True,
+        )
+        return 0
+    for key, value in report.items():
+        print(f"{key:24} {value}")
+    if latest:
+        print("\nmost recent proposals")
+        for item in latest:
+            mark = "OK " if item.approved else "no "
+            print(f"  {mark}{item.symbol:12} qty={item.quantity} {item.explanation}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
 
@@ -1517,6 +1788,35 @@ def build_parser() -> argparse.ArgumentParser:
     model_promote.add_argument("--actor", required=True)
     model_promote.add_argument("--reason", required=True)
     model_promote.set_defaults(func=cmd_model_promote)
+
+    carry_scan = sub.add_parser(
+        "carry-scan", help="score approved symbols for carry, size them, record every decision"
+    )
+    carry_scan.add_argument("--capital", default="10000", help="capital across both legs")
+    carry_scan.add_argument("--horizon-hours", type=int, default=24)
+    carry_scan.add_argument("--max-leverage", default="2")
+    carry_scan.add_argument("--stress-sigma", default="3")
+    carry_scan.add_argument("--stress-floor", default="0.15")
+    carry_scan.add_argument("--margin-buffer", default="0.25")
+    carry_scan.add_argument("--perp-fee-bps", default="2")
+    carry_scan.add_argument("--spot-fee-bps", default="10")
+    carry_scan.add_argument("--slippage-bps", default="3")
+    carry_scan.add_argument("--basis-bps", default="5")
+    carry_scan.add_argument("--capital-cost-bps", default="0")
+    carry_scan.add_argument("--volatility-candles", type=int, default=720)
+    carry_scan.add_argument("--funding-lookback", type=int, default=90)
+    carry_scan.add_argument("--max-instrument-notional", default=None)
+    carry_scan.add_argument("--max-total-notional", default=None)
+    carry_scan.add_argument("--max-group-notional", default=None)
+    _add_symbol_selector(carry_scan)
+    carry_scan.set_defaults(func=cmd_carry_scan)
+
+    carry_status = sub.add_parser(
+        "carry-status", help="recorded carry proposals and why the engine decided"
+    )
+    carry_status.add_argument("--json", action="store_true")
+    carry_status.add_argument("--limit", type=int, default=15)
+    carry_status.set_defaults(func=cmd_carry_status)
 
     promotion = sub.add_parser("promotion-status", help="promotion gates and binding constraint")
     promotion.add_argument("--json", action="store_true")

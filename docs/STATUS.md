@@ -6,7 +6,7 @@
 > factual; when work completes, move it from **Backlog** to the relevant phase
 > entry.
 
-_Last updated: 2026-08-16 (Phase 4 complete; champion promoted on research evidence)_
+_Last updated: 2026-08-16 (Phase 5 complete; carry-scan run over the research universe)_
 
 > Every figure below is a dated snapshot. Run **`dashboard`** for the live
 > operator view — connectivity, kill switches, run history, and promotion-gate
@@ -40,7 +40,7 @@ history met reality there.
 
 ## Current state (one paragraph)
 
-**Phases 0–4 are complete.**
+**Phases 0–5 are complete.**
 Phase 0 built the governance surface. Phase 1 added the public read-only Binance
 adapter, raw retention, rate-limit budgeting, and WebSocket gap handling. Phase 2
 added the signed read-only maintenance-bracket path, exact filter/funding/margin
@@ -75,9 +75,16 @@ per-interval slices, and replays with zero inserts. `funding-persistence-v1`
 (`b4c7fca99d85...`) was promoted to champion on 2026-08-16 by actor `myself` on
 that research evidence. None of it is promotion evidence: archive replay is worth
 zero under ADR-0012, so a champion existing does not move any gate.
-**There is still no risk engine and no code path that can submit an
-order.** Every promotion gate reads
-`UNAVAILABLE`, correctly, because the system has never traded.
+Phase 5 adds the deterministic risk engine: exact liquidation prices from the
+real margin tiers, carry quoted on capital rather than notional, a stress band
+floored regardless of the vol model, a 2x effective-leverage cap, an untouchable
+margin buffer, `ASSET:` correlation groups, and refusals that name the binding
+constraint. `carry-scan` ran over the 19-symbol universe on 2026-08-16 and
+**refused all 19** at a 24-hour horizon on `NEGATIVE_CARRY`; BTC only turns
+positive near a 30-day hold (limitation 7). Every decision, refusals included,
+is recorded in `carry_proposals`.
+**There is still no code path that can submit an order.** Every promotion gate
+reads `UNAVAILABLE`, correctly, because the system has never traded.
 
 ## Specification phases
 
@@ -91,7 +98,7 @@ hold. No later phase is inferred from an earlier component existing.
 | 2 — Instrument and margin specification | `exchangeInfo` filters, `leverageBracket` tiers, per-symbol funding schedule, versioned and fail-closed on change | ✅ **Done** — signed production capture reconciled and exact catalog hash approved (ADR-0018) |
 | 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | ✅ **Done** — 19-symbol, 24-month research range ingested and verified complete (ADR-0019, ADR-0020) |
 | 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | ✅ **Done** — baseline, both gates, provenance, immutable predictions, evaluations, slices, and a promoted champion (ADR-0021) |
-| 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | 🟡 **Partial** — liquidation, carry, sizing, stress band, caps, buffer, and explainable refusals all land as pure domain logic, property-tested; no persistence, no CLI, and the cost inputs are caller-supplied rather than measured |
+| 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | ✅ **Done** — liquidation, carry, sizing, caps, buffer, explainable refusals, `carry-scan` over real data, and immutable proposals |
 | 6 — Historical backtester | Leakage-free replay, realistic fill/slippage, funding accrual, benchmark comparison | ⬜ Not started |
 | 7 — Paper trading | Live-data two-leg simulation, mark-to-market, **reconciliation against a read-only real account**, dashboards, prospective evidence | ⬜ Not started |
 | 8 — Testnet execution | Idempotent orders, cancellation, partial fills, restart recovery, order/fill streaming | ⬜ Not started |
@@ -99,7 +106,7 @@ hold. No later phase is inferred from an earlier component existing.
 | 10 — Supervised live | Tiny allocation, per-order human approval, strict halts, daily reconciliation | ⬜ Not started |
 | 11 — Limited autonomy | Narrow approved symbols/sizes/windows, anomaly fallback, independent review, rollback proof | ⬜ Not started |
 
-**Do phases 0–4 in order and do not skip 2.** Instrument filters and margin tiers
+**Do phases 0–5 in order and do not skip 2.** Instrument filters and margin tiers
 are this project's analogue of the sibling's contract parser: the place where a
 wrong assumption silently produces a wrong position size.
 
@@ -120,6 +127,7 @@ packages/domain/            Pure logic. No framework, DB, or venue imports.
   liquidation.py            Exact liquidation prices from real margin tiers (ADR-0009)
   carry.py                  Net carry in bps, on notional and on capital deployed
   risk.py                   Sizing, the stress band, the caps, explainable refusals
+  volatility.py             Realized vol + trailing funding; the one float boundary
   errors.py                 Domain exception base
 packages/venue_binance/     Read-only venue adapter. No order path exists.
   endpoints.py              Base URLs and paths — one place to correct routing
@@ -136,12 +144,12 @@ packages/modeling/          Provenance capture; touches Git and the filesystem
 packages/config/            Settings (pydantic-settings) + SecretProvider
 packages/storage/           Immutable content-addressed raw-payload store
 packages/observability/     JSON logging with credential redaction
-packages/db/                Audit, catalog, market history, quality, and model repos
+packages/db/                Audit, catalog, market history, quality, model, carry repos
 apps/cli/main.py            Every command; owns the transaction
-migrations/                 Alembic (4 migrations through 3f4619e0553e)
+migrations/                 Alembic (5 migrations through d565bb42d888)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
 scripts/crontab.example     Explicit BTC live-collector/watchdog schedule
-tests/                      576 unit + integration + recorded contracts
+tests/                      590 unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 
@@ -170,6 +178,8 @@ The governance surface plus the Phase-1–3 read-only venue/data commands.
 | `model-baseline` | Walk the funding-persistence baseline and record predictions + evidence |
 | `model-status` | Model versions, prediction/evaluation counts, current champion |
 | `model-promote` | Append a champion PROMOTE/RETIRE for an exact model hash |
+| `carry-scan` | Score approved symbols for carry, size them, record every decision |
+| `carry-status` | Recorded proposals, approval counts, and why the engine decided |
 
 Planned, each landing in its phase: `daily-sync`, `carry-scan`, `paper-trade`,
 `paper-cycle`, `paper-report`, `reconcile`, `calibration`, `backtest`.
@@ -195,6 +205,7 @@ Planned, each landing in its phase: `daily-sync`, `carry-scan`, `paper-trade`,
 | `model_evaluations` | Calibration + both skill scores; research vs promotion-eligible | ✅ |
 | `model_evaluation_slices` | Per-symbol and per-interval skill for one evaluation | via evaluation |
 | `model_champion_events` | Append-only PROMOTE/RETIRE; latest event is the champion | ✅ |
+| `carry_proposals` | Immutable sizing decisions, refusals included, with full working | ✅ |
 
 Every market-keyed table added later **must** carry `environment` (ADR-0010).
 
@@ -225,61 +236,77 @@ wrong conclusions from the numbers above.
    trading in August 2026. Perpetuals that paid rich funding and then delisted
    are absent entirely, which flatters any carry backtest built on it. Nothing in
    the catalog records delisted symbols, so this cannot currently be corrected.
-7. **The funding interval changes within a symbol's history.** ALICEUSDT ran 8h,
+7. **Carry does not pay below roughly a two-week hold.** Measured by `carry-scan`
+   on 2026-08-16: at a 24-hour horizon all 19 symbols are refused on
+   `NEGATIVE_CARRY`, and BTC only turns positive near 30 days (+9.38 bps on
+   capital). Round-trip cost is about 32 bps against roughly 0.5 bps a
+   settlement. Holding longer also widens the stress band, so the two pull
+   against each other.
+8. **Fee, slippage, and basis inputs are assumed, not measured.** `carry-scan`
+   defaults to 2/10 bps perp/spot fees, 3 bps slippage and 5 bps basis. None come
+   from the venue or from the account's real fee tier, so every carry figure is
+   only as good as those four numbers.
+9. **The expected funding rate is a trailing mean, not the champion model.** The
+   Phase-4 model predicts `P(funding >= threshold)`; converting that to an
+   expected rate is an untested modelling decision, so the scan uses what settled
+   and says so on every run.
+10. **The funding interval changes within a symbol's history.** ALICEUSDT ran 8h,
    then 1h, then 4h inside the research range; ACEUSDT dropped to 1h for eleven
    days. Use the archive's own `funding_interval_hours` for the settlement being
    priced — never the current catalog value applied retroactively (ADR-0020).
-8. **The venue skips settlements.** The 2026-06-24 04:00 UTC settlement does not
+11. **The venue skips settlements.** The 2026-06-24 04:00 UTC settlement does not
    exist for any four-hourly symbol in the dataset, confirmed independently
    against REST. Code that assumes a settlement at every scheduled boundary will
    over-accrue carry (ADR-0020).
-9. **Archive funding timestamps are not on the boundary.** The published
+12. **Archive funding timestamps are not on the boundary.** The published
    `calc_time` carries millisecond jitter (observed ±5 ms). Gap detection allows
    ±1 minute; never test a funding timestamp for exact boundary equality.
-10. **The liquidation-distance invariant is stated, not implemented** (ADR-0009).
-    Its promotion gate exists; the risk engine does not. Phase 5.
-11. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
+13. **The liquidation-distance invariant is implemented but never exercised**
+    (ADR-0009). The engine, the property tests, and `carry-scan` exist, but no
+    position has ever been opened, so the ceiling gate has had nothing to count.
+    Zero violations across zero opportunities to violate is not evidence.
+14. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
     blocks on `UNKNOWN` because nothing can yet produce `RECONCILED`. Phase 7.
-12. **The collector schedule is installed on this host only, since 2026-08-15**,
+15. **The collector schedule is installed on this host only, since 2026-08-15**,
     and its durable health over wall-clock time is not yet observed. It was
     **appended** to a user crontab shared with the sibling repo — `crontab
     scripts/crontab.example` would have deleted the sibling's schedule. It
     collects **BTCUSDT only**; the other 18 research symbols have no live series.
-13. **A REST collection hole does not heal.** `record-funding --limit 10` reaches
+16. **A REST collection hole does not heal.** `record-funding --limit 10` reaches
     back about 3.3 days, so the four-day outage before 2026-08-15 skipped the
     2026-08-12 00:00 settlement, which the venue does have. A wider poll filled
     it, but the `BLOCKED` assessment still counts: superseding matches on
     artifact, and every REST poll is a new artifact. Only re-ingested archive
     files supersede (ADR-0020).
-14. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
+17. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
     exists. See ADR-0012 for why a naive construction would read `PASS`.
-15. **Freshness tolerances are still mostly guesses.** The funding tolerance is
+18. **Freshness tolerances are still mostly guesses.** The funding tolerance is
     now derived from the venue's own per-symbol interval (ADR-0016), but the
     60 s mark-price, 5 s order-pricing, and 60 s account-state figures have not
     been validated against recorded latency.
-16. **Testnet and production are different venues in every way that matters.**
+19. **Testnet and production are different venues in every way that matters.**
     854 symbols vs 731, weight limit 2400/min vs 6000/min, and *plausibly
     similar* prices that would not look wrong if interleaved (ADR-0015 finding
     3). Testnet evidence is never production evidence.
-17. **One scheduler per database.** Two hosts writing the same database both
+20. **One scheduler per database.** Two hosts writing the same database both
     append evidence and double-count accrual. Not enforced in code.
-18. **Integration tests read committed rows.** They roll back their own
+21. **Integration tests read committed rows.** They roll back their own
     transaction but see real data. Never assert on a global "latest"/"count" —
     assert on deltas or scope to a row the test created.
-19. **Brazilian record-keeping is a stated requirement with no implementation.**
+22. **Brazilian record-keeping is a stated requirement with no implementation.**
     The ledger must eventually export per-trade records with BRL valuation at
     trade time. Design for it when the ledger lands (Phase 7).
-20. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
+23. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
     itself a risk limit; there is no code for it.
-21. **The dev host's Docker stack is not always up.** The crypto Postgres exited
+24. **The dev host's Docker stack is not always up.** The crypto Postgres exited
     while another project's stack was started on 2026-08-15, and every cron tick
     failed closed until `docker compose up -d` restored it. Nothing supervises
     the containers.
-22. **The champion rests on backtest evidence.** `b4c7fca99d85...` was promoted
+25. **The champion rests on backtest evidence.** `b4c7fca99d85...` was promoted
     on a `RESEARCH_ONLY` evaluation, which is correct — a champion is needed to
     *start* paper trading, and champion selection is not a promotion gate — but
     it means no prospective evidence stands behind it yet.
-23. **Three `funding-persistence-v1` model versions exist; only the newest is
+26. **Three `funding-persistence-v1` model versions exist; only the newest is
     meaningful.** Before 2026-08-15 the identity hash included the Git commit, so
     two unrelated commits minted fresh versions and re-recorded every prediction
     (144,966 rows across three identities instead of 48,322). Identity is now the
@@ -291,14 +318,14 @@ wrong conclusions from the numbers above.
 ## Backlog (next increments, roughly ordered)
 
 1. **Widen live collection beyond BTCUSDT** so a paper campaign has a live
-   series for the symbols the champion was fit on (limitation 12). Phase 7
+   series for the symbols the champion was fit on (limitation 15). Phase 7
    cannot start a consecutive-day run without it.
 2. **Observe the installed collector schedule** over wall-clock time, and decide
    whether live collection should widen beyond BTCUSDT to the research universe
-   (limitation 12).
+   (limitation 15).
 3. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
    recorded corpus.
-4. Validate the remaining freshness tolerances (limitation 14) against measured
+4. Validate the remaining freshness tolerances (limitation 18) against measured
    latency.
 5. Immutable model provenance — port the *pattern* from the sibling's
    ADR-0009/0015. Instrument catalog versioning now exists as the local pattern.

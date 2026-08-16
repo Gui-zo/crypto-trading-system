@@ -792,3 +792,54 @@ class ModelChampionEventRecord(Base):
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class CarryProposalRecord(Base):
+    """One immutable, explainable sizing decision — approved or refused.
+
+    Refusals are stored, not just approvals. A book that only records what it
+    did cannot answer "why were we flat through that window", and the refusal
+    reasons are the evidence that the risk engine was working rather than idle.
+
+    ``outcomes_json`` carries every limit's permitted quantity, so a decision can
+    be re-argued later without re-running the engine against inputs that have
+    since moved.
+    """
+
+    __tablename__ = "carry_proposals"
+    __table_args__ = (
+        CheckConstraint(_VALID_ENVIRONMENT, name="valid_environment"),
+        CheckConstraint("quantity >= 0 AND notional >= 0", name="nonnegative_size"),
+        CheckConstraint("stress_band > 0", name="positive_stress_band"),
+        CheckConstraint(
+            "(approved AND quantity > 0) OR (NOT approved AND quantity = 0)",
+            name="approval_matches_size",
+        ),
+        Index("ix_carry_proposals_lookup", "environment", "symbol", "evaluated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment: Mapped[str] = mapped_column(String(32))
+    symbol: Mapped[str] = mapped_column(String(64))
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    catalog_sha256: Mapped[str] = mapped_column(String(64))
+    mark_price: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    forecast_volatility: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    expected_funding_rate: Mapped[Decimal] = mapped_column(Numeric(18, 12))
+    settlements: Mapped[int] = mapped_column(Integer)
+    gross_funding_bps: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    total_cost_bps: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    net_carry_bps_on_capital: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    breakeven_funding_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    approved: Mapped[bool] = mapped_column(Boolean)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    notional: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    perp_margin: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    margin_buffer: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    capital_required: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    stress_band: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    binding_constraint: Mapped[str] = mapped_column(String(32))
+    explanation: Mapped[str] = mapped_column(Text)
+    limits_json: Mapped[dict[str, str]] = mapped_column(JSON)
+    outcomes_json: Mapped[list[dict[str, str]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

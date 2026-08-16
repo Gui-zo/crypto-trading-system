@@ -85,7 +85,7 @@ a price the risk engine approved.
 ## Verification (all four must pass before committing)
 
 ```bash
-uv run pytest -q          # 576 tests
+uv run pytest -q          # 590 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations

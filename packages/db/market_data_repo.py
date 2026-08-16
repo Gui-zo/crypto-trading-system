@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from enum import StrEnum
 from itertools import pairwise
 from typing import Any
@@ -440,6 +441,39 @@ class MarketDataRepository:
         )
         await self._session.flush()
         return True
+
+    async def kline_closes(
+        self,
+        symbol: str,
+        *,
+        market: str = "usdm",
+        interval: str = "1h",
+        limit: int = 720,
+    ) -> tuple[Decimal, ...]:
+        """The most recent closed candle closes, oldest first.
+
+        Ordered ascending on return because every consumer of a price series
+        wants it that way; fetching descending and reversing keeps the LIMIT on
+        the recent end where it belongs.
+        """
+        rows = (
+            (
+                await self._session.execute(
+                    select(KlineObservationRecord.close_price)
+                    .where(
+                        KlineObservationRecord.environment == self._environment,
+                        KlineObservationRecord.symbol == symbol.strip().upper(),
+                        KlineObservationRecord.market == market,
+                        KlineObservationRecord.interval == interval,
+                    )
+                    .order_by(KlineObservationRecord.open_time.desc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return tuple(reversed([Decimal(str(value)) for value in rows]))
 
     async def funding_series(
         self,
