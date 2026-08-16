@@ -1259,6 +1259,7 @@ async def cmd_model_status(settings: Settings, args: argparse.Namespace) -> int:
         repository = ModelRepository(session, environment=settings.binance_env.value)
         counts = await repository.counts()
         champion = await repository.champion()
+        versions = await repository.versions()
     report: dict[str, object] = {
         "environment": settings.binance_env.value,
         **counts,
@@ -1266,12 +1267,52 @@ async def cmd_model_status(settings: Settings, args: argparse.Namespace) -> int:
         "champion_sha256": champion.content_sha256 or "",
         "champion_actor": champion.actor or "",
         "champion_recorded_at": champion.recorded_at,
+        "versions": [
+            {
+                "content_sha256": item.content_sha256,
+                "semantic_version": item.semantic_version,
+                "source_sha256": item.source_sha256,
+                "code_commit": item.code_commit,
+                "scored_cases": item.scored_cases,
+                "brier_skill_vs_naive": item.brier_skill_vs_naive,
+                "brier_skill_vs_climatology": item.brier_skill_vs_climatology,
+                "eligible_status": item.eligible_status,
+                "is_champion": item.content_sha256 == champion.content_sha256,
+            }
+            for item in versions
+        ],
     }
     if args.json:
         _print(report, as_json=True)
     else:
         for key, value in report.items():
+            if key == "versions":
+                continue
             print(f"{key:24} {value}")
+        if versions:
+            print("\nregistered model versions (newest first)")
+            print(
+                f"  {'':1} {'content sha256':<64}  {'source':<10} {'n':>6} "
+                f"{'vs_naive':>9} {'vs_clim':>9}  evidence"
+            )
+            for item in versions:
+                marker = "*" if item.content_sha256 == champion.content_sha256 else " "
+                skill_naive = (
+                    "  -"
+                    if item.brier_skill_vs_naive is None
+                    else f"{item.brier_skill_vs_naive:+.5f}"
+                )
+                skill_clim = (
+                    "  -"
+                    if item.brier_skill_vs_climatology is None
+                    else f"{item.brier_skill_vs_climatology:+.5f}"
+                )
+                print(
+                    f"  {marker} {item.content_sha256:<64}  {item.source_sha256[:10]:<10} "
+                    f"{item.scored_cases or 0:>6} {skill_naive:>9} {skill_clim:>9}  "
+                    f"{item.eligible_status or 'NO EVIDENCE'}"
+                )
+            print("  (* = current champion; pass a full hash to model-promote --hash)")
         if not champion.has_champion:
             print("\nNo champion model. Sizing must never consult a model that has none.")
     return 0

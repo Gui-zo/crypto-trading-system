@@ -63,6 +63,21 @@ class PredictionWriteResult:
 
 
 @dataclass(frozen=True, slots=True)
+class VersionSummary:
+    """One registered version with its latest evidence, for the operator view."""
+
+    content_sha256: str
+    semantic_version: str
+    source_sha256: str
+    code_commit: str
+    created_at: datetime
+    scored_cases: int | None
+    brier_skill_vs_naive: float | None
+    brier_skill_vs_climatology: float | None
+    eligible_status: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ChampionState:
     """The current champion, or the explicit absence of one."""
 
@@ -134,6 +149,46 @@ class ModelRepository:
             .scalars()
             .one_or_none()
         )
+
+    async def versions(self, limit: int = 20) -> tuple[VersionSummary, ...]:
+        """Every registered version with its latest evidence, newest first.
+
+        Exists so an operator can read the hash they need for ``model-promote``
+        from the CLI. Requiring a hand-written SQL query to find it made the
+        champion decision harder than the decision itself.
+        """
+        rows = (
+            (
+                await self._session.execute(
+                    select(ModelVersionRecord)
+                    .order_by(ModelVersionRecord.created_at.desc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        summaries: list[VersionSummary] = []
+        for row in rows:
+            evaluation = await self.latest_evaluation(row.id)
+            summaries.append(
+                VersionSummary(
+                    content_sha256=row.content_sha256,
+                    semantic_version=row.semantic_version,
+                    source_sha256=row.source_sha256,
+                    code_commit=row.code_commit,
+                    created_at=row.created_at,
+                    scored_cases=None if evaluation is None else evaluation.scored_cases,
+                    brier_skill_vs_naive=(
+                        None if evaluation is None else float(evaluation.brier_skill_vs_naive)
+                    ),
+                    brier_skill_vs_climatology=(
+                        None if evaluation is None else float(evaluation.brier_skill_vs_climatology)
+                    ),
+                    eligible_status=None if evaluation is None else evaluation.eligible_status,
+                )
+            )
+        return tuple(summaries)
 
     # --- predictions ------------------------------------------------------
 

@@ -21,9 +21,9 @@ guessing.
 > persistence baseline beats naive by +0.294 and climatology by +0.180 on the
 > research history, which is why the model must now clear both gates
 > (ADR-0021) — archive replay is worth zero toward promotion. 48,322 immutable
-> predictions are recorded under a content-addressed model version, and no
-> champion is promoted. There is no risk engine and no code path that can submit
-> an order.
+> predictions are recorded under a content-addressed model version, and
+> `funding-persistence-v1` is the promoted champion on that research evidence.
+> There is no risk engine and no code path that can submit an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
 
