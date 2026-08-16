@@ -10,14 +10,14 @@ live capital is stepwise and gated by explicit, testable criteria. When unsure,
 **fail closed** — reject on missing, stale, or ambiguous input rather than
 guessing.
 
-> **Status: Phases 0–3 complete.** Checksum-verified monthly archive ingestion,
+> **Status: Phases 0–4 complete.** Checksum-verified monthly archive ingestion,
 > source-aware market-data persistence, live funding/price collectors, and
 > producer health checks are built and exercised. The research backfill holds
 > 48,905 funding settlements and 665,760 closed 1h candles over
 > `[2024-08-01, 2026-08-01)` for 19 symbols — every one exactly complete in both
 > spot and USD-M, replaying with zero inserts. Six quality assessments remain
 > `BLOCKED`, all true positives: two mid-history funding-cadence changes and one
-> settlement the venue skipped (ADR-0020). **Phase 4 has begun:** the funding-
+> settlement the venue skipped (ADR-0020). **Phase 4 is done:** the funding-
 > persistence baseline beats naive by +0.294 and climatology by +0.180 on the
 > research history, which is why the model must now clear both gates
 > (ADR-0021) — archive replay is worth zero toward promotion. 48,322 immutable

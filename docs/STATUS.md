@@ -6,7 +6,7 @@
 > factual; when work completes, move it from **Backlog** to the relevant phase
 > entry.
 
-_Last updated: 2026-08-15 (Phase 3 complete; research backfill ingested)_
+_Last updated: 2026-08-16 (Phase 4 complete; champion promoted on research evidence)_
 
 > Every figure below is a dated snapshot. Run **`dashboard`** for the live
 > operator view — connectivity, kill switches, run history, and promotion-gate
@@ -40,7 +40,7 @@ history met reality there.
 
 ## Current state (one paragraph)
 
-**Phases 0–3 are complete.**
+**Phases 0–4 are complete.**
 Phase 0 built the governance surface. Phase 1 added the public read-only Binance
 adapter, raw retention, rate-limit budgeting, and WebSocket gap handling. Phase 2
 added the signed read-only maintenance-bracket path, exact filter/funding/margin
@@ -61,7 +61,7 @@ artifacts, every symbol exactly complete in both spot and USD-M and replaying
 with zero inserts. Six quality assessments remain `BLOCKED`, all true positives:
 two mid-history funding-cadence changes and a settlement the venue skipped on
 2026-06-24, confirmed against REST.
-Phase 4 is mostly built. `packages/domain/funding_model.py` implements the
+Phase 4 is complete. `packages/domain/funding_model.py` implements the
 ADR-0004 target, case construction from observed settlements, the naive baseline,
 an expanding conditional-persistence model, a climatology baseline, and
 walk-forward scoring under a resolution-time leakage rule. On the research
@@ -99,7 +99,7 @@ hold. No later phase is inferred from an earlier component existing.
 | 10 — Supervised live | Tiny allocation, per-order human approval, strict halts, daily reconciliation | ⬜ Not started |
 | 11 — Limited autonomy | Narrow approved symbols/sizes/windows, anomaly fallback, independent review, rollback proof | ⬜ Not started |
 
-**Do phases 0–3 in order and do not skip 2.** Instrument filters and margin tiers
+**Do phases 0–4 in order and do not skip 2.** Instrument filters and margin tiers
 are this project's analogue of the sibling's contract parser: the place where a
 wrong assumption silently produces a wrong position size.
 
