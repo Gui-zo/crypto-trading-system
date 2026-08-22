@@ -1754,6 +1754,75 @@ async def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# funding survey — where carry actually is, and whether it can be hedged
+# ---------------------------------------------------------------------------
+
+
+async def cmd_funding_survey(settings: Settings, args: argparse.Namespace) -> int:
+    """Live funding across the venue, split by whether the trade can be hedged.
+
+    The split is the point (ADR-0025). A delta-neutral carry position needs a
+    spot leg, and the existence of that spot leg is exactly what lets everyone
+    else arbitrage the funding down. Rich funding and hedgeability are therefore
+    close to mutually exclusive, and a survey that pools them overstates what
+    this strategy can earn by a wide margin.
+
+    Read-only public endpoints; no credentials involved.
+    """
+
+    async def body(session: AsyncSession) -> int:
+        async with create_http_client() as http:
+            client = BinanceRestClient(
+                environment=VenueEnvironment(settings.binance_env.value), http=http
+            )
+            premium = await client.mark_prices()
+            info = await client.funding_info()
+            spot = await client.spot_symbols()
+
+        intervals = {row.symbol: row.fundingIntervalHours for row in info.value}
+        tradable_spot = set(spot.value)
+
+        hedgeable: list[tuple[Decimal, str, int]] = []
+        naked: list[tuple[Decimal, str, int]] = []
+        for row in premium.value:
+            symbol = row.symbol
+            if not symbol.endswith("USDT") or row.lastFundingRate is None:
+                continue
+            hours = intervals.get(symbol) or 8
+            rate = parse_decimal(row.lastFundingRate)
+            annualised = rate * (Decimal(8760) / Decimal(hours)) * Decimal(100)
+            bucket = hedgeable if symbol in tradable_spot else naked
+            bucket.append((annualised, symbol, hours))
+
+        def summarise(rows: list[tuple[Decimal, str, int]], label: str) -> None:
+            if not rows:
+                print(f"{label:26} n=0")
+                return
+            values = sorted(item[0] for item in rows)
+            median = values[len(values) // 2]
+            print(
+                f"{label:26} n={len(values):>4}  median={median:>8.2f}%  "
+                f"max={values[-1]:>8.2f}%  "
+                f">20%={len([v for v in values if v > 20]):>3}  "
+                f">50%={len([v for v in values if v > 50]):>3}"
+            )
+
+        print("live annualised funding, USDT perpetuals\n")
+        summarise(hedgeable, "HEDGEABLE (spot exists)")
+        summarise(naked, "NOT hedgeable (no spot)")
+        print(f"\ntop {args.top} hedgeable — the only ones this strategy can trade:")
+        for annualised, symbol, hours in sorted(hedgeable, reverse=True)[: args.top]:
+            print(f"  {symbol:16} {hours:>2}h  {annualised:>8.1f}%")
+        print(
+            "\nNOTE: a single funding reading is not a durable return. High funding is "
+            "often transient and mean-reverting (ADR-0025)."
+        )
+        return 0
+
+    return await _run_audited(settings, job_name="funding-survey", argv=sys.argv[1:], body=body)
+
+
+# ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
 
@@ -1994,6 +2063,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_symbol_selector(backtest)
     backtest.set_defaults(func=cmd_backtest)
+
+    funding_survey = sub.add_parser(
+        "funding-survey", help="live funding across the venue, split by hedgeability"
+    )
+    funding_survey.add_argument("--top", type=int, default=15)
+    funding_survey.set_defaults(func=cmd_funding_survey)
 
     promotion = sub.add_parser("promotion-status", help="promotion gates and binding constraint")
     promotion.add_argument("--json", action="store_true")

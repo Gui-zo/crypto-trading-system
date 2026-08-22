@@ -12,7 +12,7 @@ command reference, what lands in which table, and — most importantly — a num
 **Known limitations** list that exists to stop you drawing wrong conclusions.
 Do not skip that section.
 
-Decision history is in [`docs/adr/`](docs/adr/) (24 ADRs). The eight most
+Decision history is in [`docs/adr/`](docs/adr/) (25 ADRs). The eight most
 load-bearing:
 
 - **[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md)** — the
@@ -48,7 +48,9 @@ load-bearing:
   Phase 7 is blocked. Do not "fix" it by widening the stress band, and do not
   re-propose tail/regime selection — it was measured and rejected in ADR-0023.
   **Quote ADR-0024's numbers, not ADR-0022's**: once liquidation is priced, no
-  horizon pays, and the two remedies that work return about 1.5% a year.
+  horizon pays. And do not quote ADR-0024's 1.5% return — **ADR-0025 withdrew
+  it**. Rich funding sits almost entirely in symbols with no spot market, so the
+  hedgeable universe is the arbitraged one; run `funding-survey` for the split.
 - **[ADR-0020](docs/adr/0020-research-backfill-and-funding-cadence-mutability.md)** —
   the research universe and range, and what two years of real history proved: a
   symbol's funding cadence **changes over time**, the venue **skips settlements**,

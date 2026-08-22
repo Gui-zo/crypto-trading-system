@@ -6,7 +6,7 @@
 > factual; when work completes, move it from **Backlog** to the relevant phase
 > entry.
 
-_Last updated: 2026-08-16 (liquidation now priced — **no horizon pays**; two remedies measured, ADR-0024)_
+_Last updated: 2026-08-16 (**hedgeability caps the return** — ADR-0025; the 1.5% figure is withdrawn)_
 
 > Every figure below is a dated snapshot. Run **`dashboard`** for the live
 > operator view — connectivity, kill switches, run history, and promotion-gate
@@ -33,7 +33,7 @@ decisions (ADR-0005), local-first (ADR-0002), prospective-only promotion gates
 (ADR-0012), venue-environment scoping from day one (ADR-0010), a filtered
 instrument universe (ADR-0016), content-addressed catalog review (ADR-0017),
 the research universe and range (ADR-0020), the carry-horizon conflict (ADR-0022).
-Full rationale in `docs/adr/` (24 ADRs).
+Full rationale in `docs/adr/` (25 ADRs).
 **ADRs 0015, 0018, 0019, and 0020 are the load-bearing venue records** — public
 REST, authenticated REST, archive documentation, and two years of ingested
 history met reality there.
@@ -101,8 +101,15 @@ forfeited its margin. Priced properly, **no horizon pays** — 7 days −1,566,
 4,544 of funding. Two remedies do work at 30 days, both returning +3,066:
 **margin top-ups**, which need a 1.0x reserve and actually draw 185,714 (roughly
 2.9x the capital), and **unified collateral**, which is clean but is an
-**unverified** modelled hypothesis about portfolio margin (ADR-0003). Even those
-return about 1.5% a year, which is not obviously a trade worth doing.
+**unverified** modelled hypothesis about portfolio margin (ADR-0003). ADR-0024 put those at about 1.5% a year; **that figure is withdrawn**. It came
+from a universe selected on data completeness during a deep bear market — six of
+the 19 symbols have negative funding and buy-and-hold ran to -97.9%. Surveying
+the live venue instead (ADR-0025): of 826 USDT perps, the **367 hedgeable** ones
+have a median of 10.95% annualised with 5 above 20%, while the **459 with no spot
+market** hold 40 of the symbols above 20%. Rich funding and hedgeability are
+close to mutually exclusive, because the spot leg that makes the trade possible
+is what lets everyone arbitrage the funding away. The realistic ceiling is
+roughly **6% a year on capital** at the hedgeable median, not 1.5% and not 50%.
 **There is still no code path that can submit an order.** Every promotion gate
 reads `UNAVAILABLE`, correctly, because the system has never traded.
 
@@ -203,6 +210,7 @@ The governance surface plus the Phase-1–3 read-only venue/data commands.
 | `carry-scan` | Score approved symbols for carry, size them, record every decision |
 | `carry-status` | Recorded proposals, approval counts, and why the engine decided |
 | `backtest` | Replay the risk engine over recorded history. Never promotion evidence |
+| `funding-survey` | Live funding across the venue, split by whether it can be hedged |
 
 Planned, each landing in its phase: `daily-sync`, `carry-scan`, `paper-trade`,
 `paper-cycle`, `paper-report`, `reconcile`, `calibration`, `backtest`.
@@ -284,70 +292,75 @@ wrong conclusions from the numbers above.
 12. **Archive funding timestamps are not on the boundary.** The published
    `calc_time` carries millisecond jitter (observed ±5 ms). Gap detection allows
    ±1 minute; never test a funding timestamp for exact boundary equality.
-13. **Every P&L figure published before ADR-0024 is suspect where liquidations
+13. **The research universe is selected against the opportunity** (ADR-0025). It
+    was chosen for two-year data completeness, which is a proxy for age and size
+    and therefore for being efficiently arbitraged. None of the top hedgeable
+    funding names are in it. **No judgement about the strategy's viability can be
+    drawn from this dataset**; it has the wrong symbols for the question.
+14. **Every P&L figure published before ADR-0024 is suspect where liquidations
     were non-zero.** The replay recorded deaths without charging for them. The
     7-day figures are unaffected; they never liquidated.
-14. **`UNIFIED_COLLATERAL` is unverified.** Nothing in the recorded fixtures
+15. **`UNIFIED_COLLATERAL` is unverified.** Nothing in the recorded fixtures
     establishes that this account can use portfolio margin, and under ADR-0003
     that makes the cleanest remedy a hypothesis. Answering it is a read-only
     venue question and it decides whether the option exists at all.
-15. **Tail selection does not defend the invariant** (ADR-0023). An empirical
+16. **Tail selection does not defend the invariant** (ADR-0023). An empirical
     band cannot price a tail it has never seen — the killing moves were 3-5x
     anything in prior history — and a regime filter cannot flag a regime that has
     not started. Tail-aware sizing is kept as a better *sizer*, never as a
     safety mechanism; the extension filter defaults to disabled.
-16. **The replay liquidates at every horizon that pays** (ADR-0022). 7 days is
+17. **The replay liquidates at every horizon that pays** (ADR-0022). 7 days is
     safe and loses money; 14 and 30 days are profitable and liquidate. The
     invariant is implemented correctly — the positions had the distance promised
     — but a 3-sigma trailing-volatility band underestimated a +151% and a +211%
     move. At 2x leverage the maximum distance is about 49% and no size changes
     that, so this cannot be fixed by sizing. **Do not start Phase 7 on this
     configuration.**
-17. **The ceiling gate has still counted nothing.** Replay violations are not
+18. **The ceiling gate has still counted nothing.** Replay violations are not
     promotion evidence (ADR-0012), so `liquidation_invariant_violations` reads
     `UNAVAILABLE`, not `FAILED`. The blocker above is a judgement, not a gate.
-18. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
+19. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
     blocks on `UNKNOWN` because nothing can yet produce `RECONCILED`. Phase 7.
-19. **The collector schedule is installed on this host only, since 2026-08-15**,
+20. **The collector schedule is installed on this host only, since 2026-08-15**,
     and its durable health over wall-clock time is not yet observed. It was
     **appended** to a user crontab shared with the sibling repo — `crontab
     scripts/crontab.example` would have deleted the sibling's schedule. It
     collects **BTCUSDT only**; the other 18 research symbols have no live series.
-20. **A REST collection hole does not heal.** `record-funding --limit 10` reaches
+21. **A REST collection hole does not heal.** `record-funding --limit 10` reaches
     back about 3.3 days, so the four-day outage before 2026-08-15 skipped the
     2026-08-12 00:00 settlement, which the venue does have. A wider poll filled
     it, but the `BLOCKED` assessment still counts: superseding matches on
     artifact, and every REST poll is a new artifact. Only re-ingested archive
     files supersede (ADR-0020).
-21. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
+22. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
     exists. See ADR-0012 for why a naive construction would read `PASS`.
-22. **Freshness tolerances are still mostly guesses.** The funding tolerance is
+23. **Freshness tolerances are still mostly guesses.** The funding tolerance is
     now derived from the venue's own per-symbol interval (ADR-0016), but the
     60 s mark-price, 5 s order-pricing, and 60 s account-state figures have not
     been validated against recorded latency.
-23. **Testnet and production are different venues in every way that matters.**
+24. **Testnet and production are different venues in every way that matters.**
     854 symbols vs 731, weight limit 2400/min vs 6000/min, and *plausibly
     similar* prices that would not look wrong if interleaved (ADR-0015 finding
     3). Testnet evidence is never production evidence.
-24. **One scheduler per database.** Two hosts writing the same database both
+25. **One scheduler per database.** Two hosts writing the same database both
     append evidence and double-count accrual. Not enforced in code.
-25. **Integration tests read committed rows.** They roll back their own
+26. **Integration tests read committed rows.** They roll back their own
     transaction but see real data. Never assert on a global "latest"/"count" —
     assert on deltas or scope to a row the test created.
-26. **Brazilian record-keeping is a stated requirement with no implementation.**
+27. **Brazilian record-keeping is a stated requirement with no implementation.**
     The ledger must eventually export per-trade records with BRL valuation at
     trade time. Design for it when the ledger lands (Phase 7).
-27. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
+28. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
     itself a risk limit; there is no code for it.
-28. **The dev host's Docker stack is not always up.** The crypto Postgres exited
+29. **The dev host's Docker stack is not always up.** The crypto Postgres exited
     while another project's stack was started on 2026-08-15, and every cron tick
     failed closed until `docker compose up -d` restored it. Nothing supervises
     the containers.
-29. **The champion rests on backtest evidence.** `b4c7fca99d85...` was promoted
+30. **The champion rests on backtest evidence.** `b4c7fca99d85...` was promoted
     on a `RESEARCH_ONLY` evaluation, which is correct — a champion is needed to
     *start* paper trading, and champion selection is not a promotion gate — but
     it means no prospective evidence stands behind it yet.
-30. **Three `funding-persistence-v1` model versions exist; only the newest is
+31. **Three `funding-persistence-v1` model versions exist; only the newest is
     meaningful.** Before 2026-08-15 the identity hash included the Git commit, so
     two unrelated commits minted fresh versions and re-recorded every prediction
     (144,966 rows across three identities instead of 48,322). Identity is now the
@@ -358,24 +371,28 @@ wrong conclusions from the numbers above.
 
 ## Backlog (next increments, roughly ordered)
 
-1. **Find out whether this account can use portfolio margin.** A read-only venue
+1. **Re-select the research universe on funding richness among hedgeable
+   symbols**, accepting shorter histories, and re-run Phases 4-6 against it. A
+   Phase-3 revisit driven by a Phase-6 finding, and the prerequisite for any
+   viability judgement (limitation 13).
+2. **Find out whether this account can use portfolio margin.** A read-only venue
    question that decides whether the cleanest remedy exists (limitation 14). It
    is the cheapest remaining step and everything else waits on it.
-2. **Decide whether ~1.5% a year is worth pursuing at all** (ADR-0024). Both
+3. **Decide whether ~1.5% a year is worth pursuing at all** (ADR-0024). Both
    working remedies return +3,066 over two years on 100,000, and the top-up path
    needs roughly 2.9x the capital to get it. This is the honest question the
    replay has surfaced, and it may end the thesis.
-3. **Widen live collection beyond BTCUSDT** so a paper campaign has a live
+4. **Widen live collection beyond BTCUSDT** so a paper campaign has a live
    series for the symbols the champion was fit on (limitation 15) — once there is
    a configuration worth running.
-4. **Observe the installed collector schedule** over wall-clock time, and decide
+5. **Observe the installed collector schedule** over wall-clock time, and decide
    whether live collection should widen beyond BTCUSDT to the research universe
    (limitation 15).
-5. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
+6. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
    recorded corpus.
-6. Validate the remaining freshness tolerances (limitation 18) against measured
+7. Validate the remaining freshness tolerances (limitation 18) against measured
    latency.
-7. Immutable model provenance — port the *pattern* from the sibling's
+8. Immutable model provenance — port the *pattern* from the sibling's
    ADR-0009/0015. Instrument catalog versioning now exists as the local pattern.
 
 ## Verification

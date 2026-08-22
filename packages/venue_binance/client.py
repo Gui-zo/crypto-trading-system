@@ -303,6 +303,46 @@ class BinanceRestClient:
             weight=weight,
         )
 
+    async def mark_prices(self) -> Response[list[PremiumIndexWire]]:
+        """Every USDⓈ-M symbol's premium index in one call.
+
+        The same endpoint as :meth:`mark_price` with the symbol omitted, which
+        the venue answers with an array. Used by the funding survey, where one
+        request per symbol across 800+ symbols would be an abuse of a budget the
+        rate limiter is there to protect.
+        """
+        payload, raw, weight = await self._get(Market.USDM, "premiumIndex")
+        if not isinstance(payload, list):
+            raise BinanceTransportError("premiumIndex: expected a JSON array")
+        return Response(
+            value=[PremiumIndexWire.model_validate(item) for item in payload],
+            raw=raw,
+            weight=weight,
+        )
+
+    async def spot_symbols(self) -> Response[list[str]]:
+        """Symbols with a live spot market — the ones a carry position can hedge.
+
+        Returned as bare symbol strings rather than parsed specifications: the
+        only question asked of spot here is whether a hedge leg exists at all.
+        """
+        payload, raw, weight = await self._get(Market.SPOT, "exchangeInfo")
+        if not isinstance(payload, dict):
+            raise BinanceTransportError("spot exchangeInfo: expected a JSON object")
+        rows = payload.get("symbols")
+        if not isinstance(rows, list):
+            raise BinanceTransportError("spot exchangeInfo: missing symbol list")
+        symbols: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if row.get("status") != "TRADING":
+                continue
+            symbol = row.get("symbol")
+            if isinstance(symbol, str):
+                symbols.append(symbol)
+        return Response(value=symbols, raw=raw, weight=weight)
+
     async def funding_history(
         self,
         symbol: str,

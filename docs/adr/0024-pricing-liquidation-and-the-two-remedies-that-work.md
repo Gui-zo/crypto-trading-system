@@ -7,6 +7,12 @@
 - Related: [ADR-0009](0009-liquidation-distance-invariant.md),
   [ADR-0003](0003-binance-schemas-synthetic-until-recorded.md)
 
+> **Return estimate corrected by [ADR-0025](0025-hedgeability-caps-the-carry-return.md).**
+> The "about 1.5% a year" conclusion below came from a research universe
+> selected on data completeness during a deep bear market, which excluded
+> the entire high-funding cohort. The hedgeable venue median is ~11%
+> gross. The liquidation findings in this ADR are unaffected.
+
 ## Context
 
 ADR-0022 reported the 30-day replay as **+1,801.40 with two liquidations**, and

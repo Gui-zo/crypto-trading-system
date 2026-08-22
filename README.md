@@ -36,8 +36,13 @@ guessing.
 > ([ADR-0023](docs/adr/0023-tail-selection-does-not-save-the-carry-trade.md)), and
 > once liquidation is priced properly **no horizon pays at all** — 30 days is
 > −57,150 ([ADR-0024](docs/adr/0024-pricing-liquidation-and-the-two-remedies-that-work.md)).
-> Margin top-ups and unified collateral both fix it and both return about 1.5% a
-> year. There is no code path that can submit an order.
+> Margin top-ups and unified collateral both fix it. The return estimate that
+> came with them has been **withdrawn**: the research universe was selected on
+> data completeness and so excluded the entire high-funding cohort. Of 826 USDT
+> perps, rich funding sits almost entirely in the 459 with **no spot market to
+> hedge against**
+> ([ADR-0025](docs/adr/0025-hedgeability-caps-the-carry-return.md)). There is no
+> code path that can submit an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
 
@@ -265,7 +270,7 @@ Commands: `dashboard`, `status`, `safety-status`, `safety-halt`, `safety-clear`,
 |---|---|
 | [`docs/STATUS.md`](docs/STATUS.md) | **Start here.** Current state, phases, commands, known limitations, backlog |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement for AI sessions picking this up cold |
-| [`docs/adr/`](docs/adr/) | 24 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, **ADR-0019**, and **ADR-0020** record REST, authenticated, archive, and research-history first contact |
+| [`docs/adr/`](docs/adr/) | 25 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, **ADR-0019**, and **ADR-0020** record REST, authenticated, archive, and research-history first contact |
 | [`tests/fixtures/binance/`](tests/fixtures/binance/) | Recorded venue responses, and an honest list of what is still unverified |
 | [`docs/founding-readme.md`](docs/founding-readme.md) | The original specification, archived verbatim |
 
