@@ -6,6 +6,11 @@
 - Related: [ADR-0009](0009-liquidation-distance-invariant.md),
   [ADR-0004](0004-funding-carry-edge-thesis.md)
 
+> **P&L figures corrected by [ADR-0024](0024-pricing-liquidation-and-the-two-remedies-that-work.md).**
+> The comparison below did not charge for liquidation. The *conclusion* is
+> unchanged — tail selection still prevents nothing — but the net figures
+> for the liquidating rows are overstated.
+
 ## Context
 
 ADR-0022 left four options for the horizon conflict. Option 3 — select against

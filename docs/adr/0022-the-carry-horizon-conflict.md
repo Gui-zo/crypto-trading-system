@@ -9,6 +9,13 @@
   [ADR-0020](0020-research-backfill-and-funding-cadence-mutability.md),
   [ADR-0021](0021-funding-persistence-baseline-and-the-climatology-gate.md)
 
+> **Corrected by [ADR-0024](0024-pricing-liquidation-and-the-two-remedies-that-work.md).**
+> The P&L figures below did not charge for liquidation: a liquidated trade
+> kept accruing funding to its intended exit and never forfeited its margin.
+> Corrected, every horizon loses money — 14 days is −28,297 and 30 days is
+> −57,150. The conflict is real and worse than described; quote ADR-0024's
+> numbers, not these.
+
 ## Context
 
 Phase 5 built the risk engine and Phase 6 replayed it over the two-year research

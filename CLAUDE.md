@@ -12,7 +12,7 @@ command reference, what lands in which table, and — most importantly — a num
 **Known limitations** list that exists to stop you drawing wrong conclusions.
 Do not skip that section.
 
-Decision history is in [`docs/adr/`](docs/adr/) (23 ADRs). The eight most
+Decision history is in [`docs/adr/`](docs/adr/) (24 ADRs). The eight most
 load-bearing:
 
 - **[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md)** — the
@@ -47,6 +47,8 @@ load-bearing:
   profitable and liquidate. ADR-0004's kill criteria 1 and 3 are in conflict and
   Phase 7 is blocked. Do not "fix" it by widening the stress band, and do not
   re-propose tail/regime selection — it was measured and rejected in ADR-0023.
+  **Quote ADR-0024's numbers, not ADR-0022's**: once liquidation is priced, no
+  horizon pays, and the two remedies that work return about 1.5% a year.
 - **[ADR-0020](docs/adr/0020-research-backfill-and-funding-cadence-mutability.md)** —
   the research universe and range, and what two years of real history proved: a
   symbol's funding cadence **changes over time**, the venue **skips settlements**,
@@ -91,7 +93,7 @@ a price the risk engine approved.
 ## Verification (all four must pass before committing)
 
 ```bash
-uv run pytest -q          # 617 tests
+uv run pytest -q          # 622 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations

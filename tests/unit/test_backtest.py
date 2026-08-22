@@ -8,7 +8,7 @@ from itertools import pairwise
 
 import pytest
 
-from domain.backtest import BacktestError, Bar, Settlement, replay
+from domain.backtest import BacktestError, Bar, MarginMode, Settlement, replay
 from domain.instrument import (
     ContractType,
     FundingSchedule,
@@ -91,6 +91,8 @@ def run(**over: object):  # type: ignore[no-untyped-def]
         "entry_every_hours": 24,
         "fee_bps_per_leg": Decimal("2"),
         "slippage_bps_per_leg": Decimal("1"),
+        "margin_mode": MarginMode.ISOLATED_LEGS,
+        "topup_reserve_multiple": Decimal(0),
     }
     kwargs.update(over)
     return replay(
@@ -261,3 +263,76 @@ def test_costs_are_charged_on_four_fills() -> None:
     for trade in result.trades:
         expected = trade.notional * (Decimal("2") / Decimal(10000)) * Decimal(4)
         assert trade.fee_cost == expected
+
+
+# --- liquidation accounting (ADR-0024) ---------------------------------------
+
+
+def spiking_bars(count: int, at: int, high: str) -> list[Bar]:
+    out = bars(count)
+    out[at] = Bar(
+        open_time=out[at].open_time,
+        high=Decimal(high),
+        low=Decimal("49000"),
+        close=Decimal("50000"),
+    )
+    return out
+
+
+def test_a_liquidated_trade_forfeits_its_margin_and_the_venue_fee() -> None:
+    """Scoring a liquidated trade as though it ran to exit flatters exactly the
+    configurations that liquidate. ADR-0022's first table did that."""
+    result = run(perp_bars=spiking_bars(900, 400, "200000"), spot_bars=bars(900))
+
+    dead = [trade for trade in result.trades if trade.liquidated]
+    assert dead
+    for trade in dead:
+        assert trade.liquidation_loss == trade.perp_margin + trade.notional * trade.liquidation_fee
+        assert trade.net_pnl < 0
+
+
+def test_a_surviving_trade_carries_no_liquidation_loss() -> None:
+    result = run()
+
+    assert result.liquidation_losses == 0
+    assert all(trade.liquidation_loss == 0 for trade in result.trades)
+
+
+def test_funding_stops_at_liquidation_rather_than_running_to_exit() -> None:
+    """A position the venue closed cannot keep collecting funding through the
+    window it never survived."""
+    early = run(perp_bars=spiking_bars(900, 100, "200000"), spot_bars=bars(900))
+    alive = run()
+
+    dead = [trade for trade in early.trades if trade.liquidated]
+    assert dead
+    matching = [t for t in alive.trades if t.entry_time == dead[0].entry_time]
+    if matching:
+        assert dead[0].settlements_paid <= matching[0].settlements_paid
+
+
+def test_topup_capital_counts_toward_the_capital_the_trade_consumed() -> None:
+    """Return on capital measured against the base alone would hide the drag."""
+    rescued = run(
+        perp_bars=spiking_bars(900, 400, "200000"),
+        spot_bars=bars(900),
+        topup_reserve_multiple=Decimal("2"),
+    )
+
+    topped = [trade for trade in rescued.trades if trade.topups > 0]
+    assert topped
+    for trade in topped:
+        assert trade.capital_committed > trade.notional
+
+
+def test_unified_collateral_lets_the_spot_leg_defend_the_perp() -> None:
+    """ADR-0009's missing mechanism, modelled. With one wallet behind both legs
+    the spot gain offsets the perp loss and the pair stops being fragile."""
+    perp = spiking_bars(900, 400, "200000")
+    spot = spiking_bars(900, 400, "200000")
+
+    isolated = run(perp_bars=perp, spot_bars=spot, margin_mode=MarginMode.ISOLATED_LEGS)
+    unified = run(perp_bars=perp, spot_bars=spot, margin_mode=MarginMode.UNIFIED_COLLATERAL)
+
+    assert isolated.liquidations > 0
+    assert unified.liquidations == 0

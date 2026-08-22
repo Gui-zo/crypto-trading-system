@@ -59,7 +59,7 @@ from db.market_data_repo import (  # noqa: E402
 from db.model_repo import ModelRepository  # noqa: E402
 from db.operational_health_repo import OperationalHealthRepository  # noqa: E402
 from db.safety_repo import SafetyControlRepository  # noqa: E402
-from domain.backtest import Bar, replay  # noqa: E402
+from domain.backtest import Bar, MarginMode, replay  # noqa: E402
 from domain.backtest import Settlement as BacktestSettlement  # noqa: E402
 from domain.carry import (  # noqa: E402
     CarryInputs,
@@ -1649,7 +1649,10 @@ async def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
             "liquidations": 0,
             "considered": 0,
             "refused": 0,
+            "topups": 0,
         }
+        topup_total_capital = Decimal(0)
+        liq_loss_total = Decimal(0)
         net_total = Decimal(0)
         funding_total = Decimal(0)
         basis_total = Decimal(0)
@@ -1686,6 +1689,9 @@ async def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
                 fee_bps_per_leg=parse_decimal(args.fee_bps),
                 slippage_bps_per_leg=parse_decimal(args.slippage_bps),
                 tail_aware=bool(args.tail_aware),
+                margin_mode=MarginMode(args.margin_mode),
+                topup_reserve_multiple=parse_decimal(args.topup_reserve),
+                topup_trigger_distance=parse_decimal(args.topup_trigger),
             )
             totals["trades"] += len(result.trades)
             totals["liquidations"] += result.liquidations
@@ -1695,24 +1701,30 @@ async def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
             funding_total += result.funding_collected
             basis_total += result.basis_pnl
             cost_total += result.costs
+            liq_loss_total += result.liquidation_losses
             for name, count in result.refusal_reasons.items():
                 reasons[name] = reasons.get(name, 0) + count
 
+            topups = sum(trade.topups for trade in result.trades)
+            topup_capital = sum((trade.topup_capital for trade in result.trades), Decimal(0))
+            totals["topups"] += topups
+            topup_total_capital += topup_capital
             flag = "!!" if result.liquidations else "  "
             print(
                 f"{flag}{symbol:12} trades={len(result.trades):>4} "
                 f"net={result.net_pnl:>14.2f} funding={result.funding_collected:>13.2f} "
                 f"basis={result.basis_pnl:>13.2f} costs={result.costs:>11.2f} "
-                f"liq={result.liquidations}"
+                f"liq={result.liquidations} topups={topups}"
             )
 
         print(
             f"\ntotals trades={totals['trades']} considered={totals['considered']} "
-            f"refused={totals['refused']} liquidations={totals['liquidations']}"
+            f"refused={totals['refused']} liquidations={totals['liquidations']} "
+            f"topups={totals['topups']} topup_capital={topup_total_capital:.2f}"
         )
         print(
             f"net={net_total:.2f} funding={funding_total:.2f} basis={basis_total:.2f} "
-            f"costs={cost_total:.2f}"
+            f"costs={cost_total:.2f} liquidation_losses={liq_loss_total:.2f}"
         )
         if reasons:
             ordered = sorted(reasons.items(), key=lambda item: -item[1])
@@ -1725,6 +1737,12 @@ async def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
             print(
                 "WARNING: a liquidation in replay is exactly what ADR-0009's ceiling gate "
                 "forbids. Investigate before trusting any sizing above."
+            )
+        if args.margin_mode == MarginMode.UNIFIED_COLLATERAL.value:
+            print(
+                "WARNING: UNIFIED_COLLATERAL is a modelled hypothesis. Nothing in the "
+                "recorded fixtures confirms the venue behaves this way, and under ADR-0003 "
+                "that makes it unverified. Do not read these numbers as achievable."
             )
         print(
             "NOTE: archive replay contributes zero to every promotion gate (ADR-0012). "
@@ -1952,6 +1970,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--tail-aware",
         action="store_true",
         help="size against the worst rise actually observed, not a 3-sigma estimate (ADR-0022)",
+    )
+    backtest.add_argument(
+        "--margin-mode",
+        default=MarginMode.ISOLATED_LEGS.value,
+        choices=[item.value for item in MarginMode],
+        help="UNIFIED_COLLATERAL models portfolio margin and is UNVERIFIED (ADR-0024)",
+    )
+    backtest.add_argument(
+        "--topup-reserve",
+        default="0",
+        help="reserve capital for margin top-ups, as a multiple of --capital",
+    )
+    backtest.add_argument(
+        "--topup-trigger",
+        default="0.10",
+        help="top up when liquidation is nearer than this fraction of price",
     )
     backtest.add_argument(
         "--max-extension",
