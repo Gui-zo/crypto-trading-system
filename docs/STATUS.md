@@ -6,7 +6,7 @@
 > factual; when work completes, move it from **Backlog** to the relevant phase
 > entry.
 
-_Last updated: 2026-08-16 (Phase 6 complete; **the replay liquidates at the horizons that pay** — ADR-0022)_
+_Last updated: 2026-08-16 (tail selection tested and rejected — ADR-0023; Phase 7 still blocked)_
 
 > Every figure below is a dated snapshot. Run **`dashboard`** for the live
 > operator view — connectivity, kill switches, run history, and promotion-gate
@@ -33,7 +33,7 @@ decisions (ADR-0005), local-first (ADR-0002), prospective-only promotion gates
 (ADR-0012), venue-environment scoping from day one (ADR-0010), a filtered
 instrument universe (ADR-0016), content-addressed catalog review (ADR-0017),
 the research universe and range (ADR-0020), the carry-horizon conflict (ADR-0022).
-Full rationale in `docs/adr/` (22 ADRs).
+Full rationale in `docs/adr/` (23 ADRs).
 **ADRs 0015, 0018, 0019, and 0020 are the load-bearing venue records** — public
 REST, authenticated REST, archive documentation, and two years of ingested
 history met reality there.
@@ -91,6 +91,10 @@ liquidations opened 2024-10-30 and died in the November rally — DOT +151%, XRP
 stress band's calibration did not, and no size survives such a move because the
 distance is bounded by leverage, not by size. ADR-0004's kill criteria 1 and 3
 are in direct conflict (ADR-0022), so **Phase 7 is blocked** rather than started.
+The first remedy was tested and rejected: tail-aware sizing nearly doubles net
+P&L at 30 days (3,066 on 8 trades) but stops no liquidation, and a regime filter
+misses both fatal entries at every threshold because they opened from a flat
+market — DOT +0.1% and XRP -1.1% against their trailing medians (ADR-0023).
 **There is still no code path that can submit an order.** Every promotion gate
 reads `UNAVAILABLE`, correctly, because the system has never traded.
 
@@ -137,6 +141,7 @@ packages/domain/            Pure logic. No framework, DB, or venue imports.
   risk.py                   Sizing, the stress band, the caps, explainable refusals
   volatility.py             Realized vol + trailing funding; the one float boundary
   backtest.py               Leakage-free replay, measured basis, mid-hold liquidation
+  regime.py                 Empirical tail and extension measures (ADR-0023)
   errors.py                 Domain exception base
 packages/venue_binance/     Read-only venue adapter. No order path exists.
   endpoints.py              Base URLs and paths — one place to correct routing
@@ -158,7 +163,7 @@ apps/cli/main.py            Every command; owns the transaction
 migrations/                 Alembic (5 migrations through d565bb42d888)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
 scripts/crontab.example     Explicit BTC live-collector/watchdog schedule
-tests/                      605 unit + integration + recorded contracts
+tests/                      617 unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 
@@ -271,58 +276,63 @@ wrong conclusions from the numbers above.
 12. **Archive funding timestamps are not on the boundary.** The published
    `calc_time` carries millisecond jitter (observed ±5 ms). Gap detection allows
    ±1 minute; never test a funding timestamp for exact boundary equality.
-13. **The replay liquidates at every horizon that pays** (ADR-0022). 7 days is
+13. **Tail selection does not defend the invariant** (ADR-0023). An empirical
+    band cannot price a tail it has never seen — the killing moves were 3-5x
+    anything in prior history — and a regime filter cannot flag a regime that has
+    not started. Tail-aware sizing is kept as a better *sizer*, never as a
+    safety mechanism; the extension filter defaults to disabled.
+14. **The replay liquidates at every horizon that pays** (ADR-0022). 7 days is
     safe and loses money; 14 and 30 days are profitable and liquidate. The
     invariant is implemented correctly — the positions had the distance promised
     — but a 3-sigma trailing-volatility band underestimated a +151% and a +211%
     move. At 2x leverage the maximum distance is about 49% and no size changes
     that, so this cannot be fixed by sizing. **Do not start Phase 7 on this
     configuration.**
-14. **The ceiling gate has still counted nothing.** Replay violations are not
+15. **The ceiling gate has still counted nothing.** Replay violations are not
     promotion evidence (ADR-0012), so `liquidation_invariant_violations` reads
     `UNAVAILABLE`, not `FAILED`. The blocker above is a judgement, not a gate.
-14. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
+16. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
     blocks on `UNKNOWN` because nothing can yet produce `RECONCILED`. Phase 7.
-15. **The collector schedule is installed on this host only, since 2026-08-15**,
+17. **The collector schedule is installed on this host only, since 2026-08-15**,
     and its durable health over wall-clock time is not yet observed. It was
     **appended** to a user crontab shared with the sibling repo — `crontab
     scripts/crontab.example` would have deleted the sibling's schedule. It
     collects **BTCUSDT only**; the other 18 research symbols have no live series.
-16. **A REST collection hole does not heal.** `record-funding --limit 10` reaches
+18. **A REST collection hole does not heal.** `record-funding --limit 10` reaches
     back about 3.3 days, so the four-day outage before 2026-08-15 skipped the
     2026-08-12 00:00 settlement, which the venue does have. A wider poll filled
     it, but the `BLOCKED` assessment still counts: superseding matches on
     artifact, and every REST poll is a new artifact. Only re-ingested archive
     files supersede (ADR-0020).
-17. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
+19. **Every promotion gate reads `UNAVAILABLE`**, not `PASS`. Correct: no evidence
     exists. See ADR-0012 for why a naive construction would read `PASS`.
-18. **Freshness tolerances are still mostly guesses.** The funding tolerance is
+20. **Freshness tolerances are still mostly guesses.** The funding tolerance is
     now derived from the venue's own per-symbol interval (ADR-0016), but the
     60 s mark-price, 5 s order-pricing, and 60 s account-state figures have not
     been validated against recorded latency.
-19. **Testnet and production are different venues in every way that matters.**
+21. **Testnet and production are different venues in every way that matters.**
     854 symbols vs 731, weight limit 2400/min vs 6000/min, and *plausibly
     similar* prices that would not look wrong if interleaved (ADR-0015 finding
     3). Testnet evidence is never production evidence.
-20. **One scheduler per database.** Two hosts writing the same database both
+22. **One scheduler per database.** Two hosts writing the same database both
     append evidence and double-count accrual. Not enforced in code.
-21. **Integration tests read committed rows.** They roll back their own
+23. **Integration tests read committed rows.** They roll back their own
     transaction but see real data. Never assert on a global "latest"/"count" —
     assert on deltas or scope to a row the test created.
-22. **Brazilian record-keeping is a stated requirement with no implementation.**
+24. **Brazilian record-keeping is a stated requirement with no implementation.**
     The ledger must eventually export per-trade records with BRL valuation at
     trade time. Design for it when the ledger lands (Phase 7).
-23. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
+25. **Exchange counterparty risk is unmodelled.** Total capital at the venue is
     itself a risk limit; there is no code for it.
-24. **The dev host's Docker stack is not always up.** The crypto Postgres exited
+26. **The dev host's Docker stack is not always up.** The crypto Postgres exited
     while another project's stack was started on 2026-08-15, and every cron tick
     failed closed until `docker compose up -d` restored it. Nothing supervises
     the containers.
-25. **The champion rests on backtest evidence.** `b4c7fca99d85...` was promoted
+27. **The champion rests on backtest evidence.** `b4c7fca99d85...` was promoted
     on a `RESEARCH_ONLY` evaluation, which is correct — a champion is needed to
     *start* paper trading, and champion selection is not a promotion gate — but
     it means no prospective evidence stands behind it yet.
-26. **Three `funding-persistence-v1` model versions exist; only the newest is
+28. **Three `funding-persistence-v1` model versions exist; only the newest is
     meaningful.** Before 2026-08-15 the identity hash included the Git commit, so
     two unrelated commits minted fresh versions and re-recorded every prediction
     (144,966 rows across three identities instead of 48,322). Identity is now the
@@ -334,11 +344,12 @@ wrong conclusions from the numbers above.
 ## Backlog (next increments, roughly ordered)
 
 1. **Decide what to do about the horizon conflict (ADR-0022).** Everything below
-   is downstream of that decision, and a 90-day paper campaign on the current
-   configuration would spend three months confirming what the replay already
-   showed. The live options are margin top-ups as an operator procedure,
-   cross-margin with the spot leg as collateral, selecting against tail regimes,
-   or rewriting ADR-0009's invariant to price liquidation rather than forbid it.
+   is downstream of that decision. Selecting against tail regimes has been tried
+   and rejected (ADR-0023), leaving three: margin top-ups as an operator
+   procedure, cross-margin with the spot leg as collateral, or rewriting
+   ADR-0009's invariant to price liquidation rather than forbid it. The first two
+   change something previously treated as fixed; the third ends the thesis as
+   stated.
 2. **Widen live collection beyond BTCUSDT** so a paper campaign has a live
    series for the symbols the champion was fit on (limitation 15) — once there is
    a configuration worth running.

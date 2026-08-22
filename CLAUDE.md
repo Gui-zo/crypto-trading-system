@@ -12,7 +12,7 @@ command reference, what lands in which table, and — most importantly — a num
 **Known limitations** list that exists to stop you drawing wrong conclusions.
 Do not skip that section.
 
-Decision history is in [`docs/adr/`](docs/adr/) (22 ADRs). The eight most
+Decision history is in [`docs/adr/`](docs/adr/) (23 ADRs). The eight most
 load-bearing:
 
 - **[ADR-0015](docs/adr/0015-binance-live-reconciliation-findings.md)** — the
@@ -45,7 +45,8 @@ load-bearing:
   before proposing any trading work.** The Phase-6 replay liquidates at every
   holding horizon that pays: 7 days is safe and loses money, 14 and 30 days are
   profitable and liquidate. ADR-0004's kill criteria 1 and 3 are in conflict and
-  Phase 7 is blocked. Do not "fix" it by widening the stress band.
+  Phase 7 is blocked. Do not "fix" it by widening the stress band, and do not
+  re-propose tail/regime selection — it was measured and rejected in ADR-0023.
 - **[ADR-0020](docs/adr/0020-research-backfill-and-funding-cadence-mutability.md)** —
   the research universe and range, and what two years of real history proved: a
   symbol's funding cadence **changes over time**, the venue **skips settlements**,
@@ -90,7 +91,7 @@ a price the risk engine approved.
 ## Verification (all four must pass before committing)
 
 ```bash
-uv run pytest -q          # 605 tests
+uv run pytest -q          # 617 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations

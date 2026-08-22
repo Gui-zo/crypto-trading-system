@@ -36,6 +36,12 @@ from domain.errors import DomainError
 from domain.instrument import InstrumentSpecification
 from domain.liquidation import Position, PositionSide, liquidation_price
 from domain.precision import to_bps
+from domain.regime import (
+    PricePoint,
+    RegimeError,
+    extension_above_trailing,
+    worst_drawup,
+)
 from domain.risk import RiskLimits, SizingRequest, size_position
 from domain.volatility import VolatilityError, mean_funding_rate, realized_volatility
 
@@ -164,12 +170,19 @@ def replay(
     slippage_bps_per_leg: Decimal,
     volatility_lookback: int = 720,
     funding_lookback: int = 90,
+    tail_aware: bool = False,
+    extension_lookback: int = 720,
 ) -> BacktestResult:
     """Replay the risk engine across ``perp_bars``, opening at fixed intervals.
 
     Entries are attempted on a fixed cadence rather than on a signal, because the
     engine under test is the *risk* engine: the question is what it permits and
     what that earns, not whether some timing rule adds value.
+
+    ``tail_aware`` swaps the parametric stress band for the larger of it and the
+    worst rise actually observed over a window of the holding length, and feeds
+    the symbol's extension above its trailing median to the regime filter
+    (ADR-0022). Both are measured from the decision's own prefix of history.
     """
     if hold_hours < 1 or entry_every_hours < 1:
         raise BacktestError("hold and entry cadence must be at least one hour")
@@ -218,6 +231,23 @@ def replay(
             index += entry_every_hours
             continue
 
+        empirical_tail: Decimal | None = None
+        extension: Decimal | None = None
+        if tail_aware:
+            try:
+                empirical_tail = worst_drawup(
+                    [PricePoint(close=bar.close, high=bar.high) for bar in prior_bars],
+                    horizon_periods=hold_hours,
+                )
+                extension = extension_above_trailing(
+                    [bar.close for bar in prior_bars], lookback_periods=extension_lookback
+                )
+            except RegimeError:
+                refused += 1
+                reasons["INSUFFICIENT_HISTORY"] = reasons.get("INSUFFICIENT_HISTORY", 0) + 1
+                index += entry_every_hours
+                continue
+
         interval = specification.funding_schedule.interval_hours
         expected_settlements = hold_hours // interval
         margin_fraction = Decimal(1) / limits.max_effective_leverage
@@ -233,6 +263,8 @@ def replay(
                 forecast_volatility=volatility,
                 available_capital=capital,
                 net_carry_bps=net_bps_on_capital,
+                empirical_tail=empirical_tail,
+                extension=extension,
             ),
             limits,
         )

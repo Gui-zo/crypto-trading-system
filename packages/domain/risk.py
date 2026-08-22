@@ -79,6 +79,7 @@ class Constraint(StrEnum):
     GROUP_NOTIONAL = "GROUP_NOTIONAL"
     AVAILABLE_CAPITAL = "AVAILABLE_CAPITAL"
     MARGIN_BRACKET_CEILING = "MARGIN_BRACKET_CEILING"
+    TAIL_REGIME = "TAIL_REGIME"
     MINIMUM_NOTIONAL = "MINIMUM_NOTIONAL"
     LOT_SIZE = "LOT_SIZE"
     NEGATIVE_CARRY = "NEGATIVE_CARRY"
@@ -95,6 +96,12 @@ class RiskLimits:
     max_instrument_notional: Decimal | None = None
     max_total_notional: Decimal | None = None
     max_group_notional: Decimal | None = None
+    #: Refuse a symbol trading further than this above its trailing median.
+    #: **Measured not to help against the ADR-0022 liquidations** — both opened
+    #: from a flat market (DOT +0.1%, XRP -1.1% extension) and rallied afterwards
+    #: (ADR-0023). Kept because entering an established move is still a poor idea,
+    #: not because it defends the invariant. ``None`` disables it.
+    max_extension: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.max_effective_leverage <= 0:
@@ -110,11 +117,23 @@ class RiskLimits:
             if value is not None and value <= 0:
                 raise RiskError(f"{name} must be positive when set")
 
-    def stress_band(self, forecast_volatility: Decimal) -> Decimal:
-        """The move the position must survive: the greater of model and floor."""
+    def stress_band(
+        self, forecast_volatility: Decimal, empirical_tail: Decimal | None = None
+    ) -> Decimal:
+        """The move the position must survive.
+
+        The greatest of three: the parametric ``sigma * volatility`` estimate,
+        the absolute floor, and — when supplied — the **largest rise actually
+        observed** over a window of the holding length (ADR-0022). The empirical
+        term exists because the parametric one assumed a shape crypto does not
+        have, and a band that has never seen a +151% move will not survive one.
+        """
         if forecast_volatility < 0:
             raise RiskError("forecast volatility cannot be negative")
-        return max(self.stress_sigma_multiple * forecast_volatility, self.stress_band_floor)
+        if empirical_tail is not None and empirical_tail < 0:
+            raise RiskError("empirical tail cannot be negative")
+        band = max(self.stress_sigma_multiple * forecast_volatility, self.stress_band_floor)
+        return band if empirical_tail is None else max(band, empirical_tail)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +169,12 @@ class SizingRequest:
     available_capital: Decimal
     #: Net carry on capital, in bps. Non-positive carry is refused outright.
     net_carry_bps: Decimal
+    #: Largest rise observed over a window of the holding length, measured from
+    #: history strictly before this decision. ``None`` keeps the parametric band.
+    empirical_tail: Decimal | None = None
+    #: How far above its trailing median the symbol is trading. ``None`` skips
+    #: the regime filter.
+    extension: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.mark_price <= 0:
@@ -272,7 +297,7 @@ def size_position(
     specification = request.specification
     schedule = specification.margin_schedule
     price = request.mark_price
-    band = limits.stress_band(request.forecast_volatility)
+    band = limits.stress_band(request.forecast_volatility, request.empirical_tail)
 
     # Capital splits across the spot leg (fully funded), the perp margin, and the
     # untouchable buffer. One unit of perp notional consumes this much capital.
@@ -295,6 +320,27 @@ def size_position(
             Constraint.NEGATIVE_CARRY,
             capital_multiple,
             f"net carry {request.net_carry_bps:.2f} bps on capital does not pay for the trade",
+        )
+
+    # A symbol already extended is refused outright rather than sized smaller:
+    # at a fixed leverage the liquidation distance is the same at any size, so
+    # a smaller position in a rallying market is not a safer one. Note this does
+    # not defend the invariant — the moves that killed positions in replay began
+    # from a flat market (ADR-0023).
+    if (
+        limits.max_extension is not None
+        and request.extension is not None
+        and request.extension > limits.max_extension
+    ):
+        return _refusal(
+            request,
+            limits,
+            band,
+            outcomes,
+            Constraint.TAIL_REGIME,
+            capital_multiple,
+            f"trading {request.extension * 100:.1f}% above its trailing median, over the "
+            f"{limits.max_extension * 100:.1f}% limit",
         )
 
     stress_quantity = max_quantity_for_stress_band(

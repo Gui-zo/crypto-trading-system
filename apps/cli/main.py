@@ -1636,6 +1636,7 @@ async def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
         stress_sigma_multiple=parse_decimal(args.stress_sigma),
         stress_band_floor=parse_decimal(args.stress_floor),
         margin_buffer_fraction=parse_decimal(args.margin_buffer),
+        max_extension=(None if args.max_extension is None else parse_decimal(args.max_extension)),
     )
 
     async def body(session: AsyncSession) -> int:
@@ -1684,6 +1685,7 @@ async def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
                 entry_every_hours=int(args.entry_every_hours),
                 fee_bps_per_leg=parse_decimal(args.fee_bps),
                 slippage_bps_per_leg=parse_decimal(args.slippage_bps),
+                tail_aware=bool(args.tail_aware),
             )
             totals["trades"] += len(result.trades)
             totals["liquidations"] += result.liquidations
@@ -1946,6 +1948,16 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--margin-buffer", default="0.25")
     backtest.add_argument("--fee-bps", default="6")
     backtest.add_argument("--slippage-bps", default="3")
+    backtest.add_argument(
+        "--tail-aware",
+        action="store_true",
+        help="size against the worst rise actually observed, not a 3-sigma estimate (ADR-0022)",
+    )
+    backtest.add_argument(
+        "--max-extension",
+        default=None,
+        help="refuse a symbol trading this far above its trailing median, e.g. 0.20",
+    )
     _add_symbol_selector(backtest)
     backtest.set_defaults(func=cmd_backtest)
 
