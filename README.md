@@ -10,7 +10,7 @@ live capital is stepwise and gated by explicit, testable criteria. When unsure,
 **fail closed** — reject on missing, stale, or ambiguous input rather than
 guessing.
 
-> **Status: Phases 0–5 complete.** Checksum-verified monthly archive ingestion,
+> **Status: Phases 0–6 complete; Phase 7 blocked.** Checksum-verified monthly archive ingestion,
 > source-aware market-data persistence, live funding/price collectors, and
 > producer health checks are built and exercised. The research backfill holds
 > 48,905 funding settlements and 665,760 closed 1h candles over
@@ -27,7 +27,12 @@ guessing.
 > floored stress band, a 2x leverage cap, an untouchable buffer, and refusals
 > that name the binding constraint. Its first run over the research universe
 > refused all 19 symbols: carry does not pay a round trip below roughly a
-> two-week hold. There is no code path that can submit an order.
+> two-week hold. **Phase 6's replay then found the blocker:** a 7-day hold is
+> safe and loses money, while 14- and 30-day holds are profitable and liquidate
+> — DOT rose 151% and XRP 211% against a ~49% liquidation distance in November
+> 2024. Kill criteria 1 and 3 are in conflict
+> ([ADR-0022](docs/adr/0022-the-carry-horizon-conflict.md)), so a paper campaign
+> is not started. There is no code path that can submit an order.
 > **[`docs/STATUS.md`](docs/STATUS.md) is the orientation document** — read it
 > first. This README covers what the project is, how to run it, and where to look.
 
@@ -190,7 +195,7 @@ v1 and will break in confusing ways.
 ### Verification — all four must pass before any commit
 
 ```bash
-uv run pytest -q          # 590 tests
+uv run pytest -q          # 605 tests
 uv run ruff check .
 uv run mypy .             # strict
 uv run alembic check      # must report no new upgrade operations
@@ -255,7 +260,7 @@ Commands: `dashboard`, `status`, `safety-status`, `safety-halt`, `safety-clear`,
 |---|---|
 | [`docs/STATUS.md`](docs/STATUS.md) | **Start here.** Current state, phases, commands, known limitations, backlog |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreement for AI sessions picking this up cold |
-| [`docs/adr/`](docs/adr/) | 21 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, **ADR-0019**, and **ADR-0020** record REST, authenticated, archive, and research-history first contact |
+| [`docs/adr/`](docs/adr/) | 22 ADRs — why the system is shaped this way. **ADR-0015**, **ADR-0018**, **ADR-0019**, and **ADR-0020** record REST, authenticated, archive, and research-history first contact |
 | [`tests/fixtures/binance/`](tests/fixtures/binance/) | Recorded venue responses, and an honest list of what is still unverified |
 | [`docs/founding-readme.md`](docs/founding-readme.md) | The original specification, archived verbatim |
 

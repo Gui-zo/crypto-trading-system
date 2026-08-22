@@ -442,6 +442,51 @@ class MarketDataRepository:
         await self._session.flush()
         return True
 
+    async def kline_bars(
+        self,
+        symbol: str,
+        *,
+        market: str = "usdm",
+        interval: str = "1h",
+        limit: int = 20000,
+    ) -> tuple[tuple[datetime, Decimal, Decimal, Decimal], ...]:
+        """``(open_time, high, low, close)`` for closed candles, oldest first.
+
+        The high is what a liquidation check needs: a short perp dies on the way
+        up, and a close-only series hides every wick that would have killed it.
+        """
+        rows = (
+            await self._session.execute(
+                select(
+                    KlineObservationRecord.open_time,
+                    KlineObservationRecord.high_price,
+                    KlineObservationRecord.low_price,
+                    KlineObservationRecord.close_price,
+                )
+                .where(
+                    KlineObservationRecord.environment == self._environment,
+                    KlineObservationRecord.symbol == symbol.strip().upper(),
+                    KlineObservationRecord.market == market,
+                    KlineObservationRecord.interval == interval,
+                )
+                .order_by(KlineObservationRecord.open_time.desc())
+                .limit(limit)
+            )
+        ).all()
+        return tuple(
+            reversed(
+                [
+                    (
+                        open_time,
+                        Decimal(str(high)),
+                        Decimal(str(low)),
+                        Decimal(str(close)),
+                    )
+                    for open_time, high, low, close in rows
+                ]
+            )
+        )
+
     async def kline_closes(
         self,
         symbol: str,

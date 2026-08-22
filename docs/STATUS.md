@@ -6,7 +6,7 @@
 > factual; when work completes, move it from **Backlog** to the relevant phase
 > entry.
 
-_Last updated: 2026-08-16 (Phase 5 complete; carry-scan run over the research universe)_
+_Last updated: 2026-08-16 (Phase 6 complete; **the replay liquidates at the horizons that pay** — ADR-0022)_
 
 > Every figure below is a dated snapshot. Run **`dashboard`** for the live
 > operator view — connectivity, kill switches, run history, and promotion-gate
@@ -32,15 +32,15 @@ Locked decisions: funding carry as the edge thesis (ADR-0004), funding-cadence
 decisions (ADR-0005), local-first (ADR-0002), prospective-only promotion gates
 (ADR-0012), venue-environment scoping from day one (ADR-0010), a filtered
 instrument universe (ADR-0016), content-addressed catalog review (ADR-0017),
-the research universe and range (ADR-0020).
-Full rationale in `docs/adr/` (21 ADRs).
+the research universe and range (ADR-0020), the carry-horizon conflict (ADR-0022).
+Full rationale in `docs/adr/` (22 ADRs).
 **ADRs 0015, 0018, 0019, and 0020 are the load-bearing venue records** — public
 REST, authenticated REST, archive documentation, and two years of ingested
 history met reality there.
 
 ## Current state (one paragraph)
 
-**Phases 0–5 are complete.**
+**Phases 0–6 are complete, and Phase 6 found a blocker.**
 Phase 0 built the governance surface. Phase 1 added the public read-only Binance
 adapter, raw retention, rate-limit budgeting, and WebSocket gap handling. Phase 2
 added the signed read-only maintenance-bracket path, exact filter/funding/margin
@@ -83,6 +83,14 @@ constraint. `carry-scan` ran over the 19-symbol universe on 2026-08-16 and
 **refused all 19** at a 24-hour horizon on `NEGATIVE_CARRY`; BTC only turns
 positive near a 30-day hold (limitation 7). Every decision, refusals included,
 is recorded in `carry_proposals`.
+Phase 6 replayed that engine over the research history and found the blocker
+this project exists to find. **At a 7-day hold the strategy is safe and loses
+money (-1,566); at 14 and 30 days it is profitable and liquidates twice.** Both
+liquidations opened 2024-10-30 and died in the November rally — DOT +151%, XRP
++211% against a liquidation distance of roughly 49%. The invariant held; the
+stress band's calibration did not, and no size survives such a move because the
+distance is bounded by leverage, not by size. ADR-0004's kill criteria 1 and 3
+are in direct conflict (ADR-0022), so **Phase 7 is blocked** rather than started.
 **There is still no code path that can submit an order.** Every promotion gate
 reads `UNAVAILABLE`, correctly, because the system has never traded.
 
@@ -99,14 +107,14 @@ hold. No later phase is inferred from an earlier component existing.
 | 3 — Historical archive + live funding series | Full `data.binance.vision` backfill, complete funding history, point-in-time integrity, quality monitoring | ✅ **Done** — 19-symbol, 24-month research range ingested and verified complete (ADR-0019, ADR-0020) |
 | 4 — Funding-persistence model | Baseline + provenance, immutable predictions, calibration, naive-baseline skill, champion registry | ✅ **Done** — baseline, both gates, provenance, immutable predictions, evaluations, slices, and a promoted champion (ADR-0021) |
 | 5 — Carry economics and risk engine | Edge in bps net of all costs, **liquidation-distance invariant**, leverage cap, margin buffer, explainable proposals | ✅ **Done** — liquidation, carry, sizing, caps, buffer, explainable refusals, `carry-scan` over real data, and immutable proposals |
-| 6 — Historical backtester | Leakage-free replay, realistic fill/slippage, funding accrual, benchmark comparison | ⬜ Not started |
-| 7 — Paper trading | Live-data two-leg simulation, mark-to-market, **reconciliation against a read-only real account**, dashboards, prospective evidence | ⬜ Not started |
+| 6 — Historical backtester | Leakage-free replay, realistic fill/slippage, funding accrual, benchmark comparison | ✅ **Done** — and its first run found the horizon conflict (ADR-0022) |
+| 7 — Paper trading | Live-data two-leg simulation, mark-to-market, **reconciliation against a read-only real account**, dashboards, prospective evidence | ⛔ **Blocked** — do not start a 90-day campaign on a configuration that liquidates in replay (ADR-0022) |
 | 8 — Testnet execution | Idempotent orders, cancellation, partial fills, restart recovery, order/fill streaming | ⬜ Not started |
 | 9 — Shadow production | Production read-only, exact would-be orders, real cost/slippage/latency measurement | ⬜ Not started |
 | 10 — Supervised live | Tiny allocation, per-order human approval, strict halts, daily reconciliation | ⬜ Not started |
 | 11 — Limited autonomy | Narrow approved symbols/sizes/windows, anomaly fallback, independent review, rollback proof | ⬜ Not started |
 
-**Do phases 0–5 in order and do not skip 2.** Instrument filters and margin tiers
+**Do phases 0–6 in order and do not skip 2.** Instrument filters and margin tiers
 are this project's analogue of the sibling's contract parser: the place where a
 wrong assumption silently produces a wrong position size.
 
@@ -128,6 +136,7 @@ packages/domain/            Pure logic. No framework, DB, or venue imports.
   carry.py                  Net carry in bps, on notional and on capital deployed
   risk.py                   Sizing, the stress band, the caps, explainable refusals
   volatility.py             Realized vol + trailing funding; the one float boundary
+  backtest.py               Leakage-free replay, measured basis, mid-hold liquidation
   errors.py                 Domain exception base
 packages/venue_binance/     Read-only venue adapter. No order path exists.
   endpoints.py              Base URLs and paths — one place to correct routing
@@ -149,7 +158,7 @@ apps/cli/main.py            Every command; owns the transaction
 migrations/                 Alembic (5 migrations through d565bb42d888)
 scripts/cron-run.sh         Scheduler entry point (flock, UTC, JSON logs)
 scripts/crontab.example     Explicit BTC live-collector/watchdog schedule
-tests/                      590 unit + integration + recorded contracts
+tests/                      605 unit + integration + recorded contracts
 tests/fixtures/binance/recorded/   Real responses captured 2026-08-09
 ```
 
@@ -180,6 +189,7 @@ The governance surface plus the Phase-1–3 read-only venue/data commands.
 | `model-promote` | Append a champion PROMOTE/RETIRE for an exact model hash |
 | `carry-scan` | Score approved symbols for carry, size them, record every decision |
 | `carry-status` | Recorded proposals, approval counts, and why the engine decided |
+| `backtest` | Replay the risk engine over recorded history. Never promotion evidence |
 
 Planned, each landing in its phase: `daily-sync`, `carry-scan`, `paper-trade`,
 `paper-cycle`, `paper-report`, `reconcile`, `calibration`, `backtest`.
@@ -261,10 +271,16 @@ wrong conclusions from the numbers above.
 12. **Archive funding timestamps are not on the boundary.** The published
    `calc_time` carries millisecond jitter (observed ±5 ms). Gap detection allows
    ±1 minute; never test a funding timestamp for exact boundary equality.
-13. **The liquidation-distance invariant is implemented but never exercised**
-    (ADR-0009). The engine, the property tests, and `carry-scan` exist, but no
-    position has ever been opened, so the ceiling gate has had nothing to count.
-    Zero violations across zero opportunities to violate is not evidence.
+13. **The replay liquidates at every horizon that pays** (ADR-0022). 7 days is
+    safe and loses money; 14 and 30 days are profitable and liquidate. The
+    invariant is implemented correctly — the positions had the distance promised
+    — but a 3-sigma trailing-volatility band underestimated a +151% and a +211%
+    move. At 2x leverage the maximum distance is about 49% and no size changes
+    that, so this cannot be fixed by sizing. **Do not start Phase 7 on this
+    configuration.**
+14. **The ceiling gate has still counted nothing.** Replay violations are not
+    promotion evidence (ADR-0012), so `liquidation_invariant_violations` reads
+    `UNAVAILABLE`, not `FAILED`. The blocker above is a judgement, not a gate.
 14. **Reconciliation is a gate, not a package** (ADR-0013). `LEDGER_RECONCILED`
     blocks on `UNKNOWN` because nothing can yet produce `RECONCILED`. Phase 7.
 15. **The collector schedule is installed on this host only, since 2026-08-15**,
@@ -317,17 +333,23 @@ wrong conclusions from the numbers above.
 
 ## Backlog (next increments, roughly ordered)
 
-1. **Widen live collection beyond BTCUSDT** so a paper campaign has a live
-   series for the symbols the champion was fit on (limitation 15). Phase 7
-   cannot start a consecutive-day run without it.
-2. **Observe the installed collector schedule** over wall-clock time, and decide
+1. **Decide what to do about the horizon conflict (ADR-0022).** Everything below
+   is downstream of that decision, and a 90-day paper campaign on the current
+   configuration would spend three months confirming what the replay already
+   showed. The live options are margin top-ups as an operator procedure,
+   cross-margin with the spot leg as collateral, selecting against tail regimes,
+   or rewriting ADR-0009's invariant to price liquidation rather than forbid it.
+2. **Widen live collection beyond BTCUSDT** so a paper campaign has a live
+   series for the symbols the champion was fit on (limitation 15) — once there is
+   a configuration worth running.
+3. **Observe the installed collector schedule** over wall-clock time, and decide
    whether live collection should widen beyond BTCUSDT to the research universe
    (limitation 15).
-3. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
+4. **Capture the missing WebSocket payload shapes** (limitation 3) and extend the
    recorded corpus.
-4. Validate the remaining freshness tolerances (limitation 18) against measured
+5. Validate the remaining freshness tolerances (limitation 18) against measured
    latency.
-5. Immutable model provenance — port the *pattern* from the sibling's
+6. Immutable model provenance — port the *pattern* from the sibling's
    ADR-0009/0015. Instrument catalog versioning now exists as the local pattern.
 
 ## Verification

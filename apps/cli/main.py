@@ -59,6 +59,8 @@ from db.market_data_repo import (  # noqa: E402
 from db.model_repo import ModelRepository  # noqa: E402
 from db.operational_health_repo import OperationalHealthRepository  # noqa: E402
 from db.safety_repo import SafetyControlRepository  # noqa: E402
+from domain.backtest import Bar, replay  # noqa: E402
+from domain.backtest import Settlement as BacktestSettlement  # noqa: E402
 from domain.carry import (  # noqa: E402
     CarryInputs,
     FeeSchedule,
@@ -1618,6 +1620,120 @@ async def cmd_carry_status(settings: Settings, args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Phase-6 historical backtester
+# ---------------------------------------------------------------------------
+
+
+async def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
+    """Replay the risk engine over recorded history, symbol by symbol.
+
+    Every number printed here is worth **zero** toward promotion (ADR-0012).
+    A backtest rejects ideas cheaply; it never earns a gate.
+    """
+    _ENVIRONMENT_HOLDER["value"] = settings.binance_env.value
+    limits = RiskLimits(
+        max_effective_leverage=parse_decimal(args.max_leverage),
+        stress_sigma_multiple=parse_decimal(args.stress_sigma),
+        stress_band_floor=parse_decimal(args.stress_floor),
+        margin_buffer_fraction=parse_decimal(args.margin_buffer),
+    )
+
+    async def body(session: AsyncSession) -> int:
+        specifications = await _approved_specifications(session, settings)
+        symbols = _selected_symbols(args, specifications)
+        market_data = MarketDataRepository(session, environment=settings.binance_env.value)
+
+        totals = {
+            "trades": 0,
+            "liquidations": 0,
+            "considered": 0,
+            "refused": 0,
+        }
+        net_total = Decimal(0)
+        funding_total = Decimal(0)
+        basis_total = Decimal(0)
+        cost_total = Decimal(0)
+        reasons: dict[str, int] = {}
+
+        for symbol in symbols:
+            try:
+                specification = _specification_from_catalog(symbol, specifications[symbol])
+            except Exception as exc:
+                print(f"-- {symbol:12} skipped: specification: {exc}")
+                continue
+            perp_rows = await market_data.kline_bars(symbol, market="usdm")
+            spot_rows = await market_data.kline_bars(symbol, market="spot")
+            if not perp_rows or not spot_rows:
+                print(f"-- {symbol:12} skipped: no kline history")
+                continue
+            settlements = await market_data.funding_series(symbol)
+
+            result = replay(
+                specification,
+                [Bar(open_time=row[0], high=row[1], low=row[2], close=row[3]) for row in perp_rows],
+                [Bar(open_time=row[0], high=row[1], low=row[2], close=row[3]) for row in spot_rows],
+                [
+                    BacktestSettlement(
+                        funding_time=item.funding_time, funding_rate=item.funding_rate
+                    )
+                    for item in settlements
+                ],
+                limits=limits,
+                capital=parse_decimal(args.capital),
+                hold_hours=int(args.hold_hours),
+                entry_every_hours=int(args.entry_every_hours),
+                fee_bps_per_leg=parse_decimal(args.fee_bps),
+                slippage_bps_per_leg=parse_decimal(args.slippage_bps),
+            )
+            totals["trades"] += len(result.trades)
+            totals["liquidations"] += result.liquidations
+            totals["considered"] += result.considered
+            totals["refused"] += result.refused
+            net_total += result.net_pnl
+            funding_total += result.funding_collected
+            basis_total += result.basis_pnl
+            cost_total += result.costs
+            for name, count in result.refusal_reasons.items():
+                reasons[name] = reasons.get(name, 0) + count
+
+            flag = "!!" if result.liquidations else "  "
+            print(
+                f"{flag}{symbol:12} trades={len(result.trades):>4} "
+                f"net={result.net_pnl:>14.2f} funding={result.funding_collected:>13.2f} "
+                f"basis={result.basis_pnl:>13.2f} costs={result.costs:>11.2f} "
+                f"liq={result.liquidations}"
+            )
+
+        print(
+            f"\ntotals trades={totals['trades']} considered={totals['considered']} "
+            f"refused={totals['refused']} liquidations={totals['liquidations']}"
+        )
+        print(
+            f"net={net_total:.2f} funding={funding_total:.2f} basis={basis_total:.2f} "
+            f"costs={cost_total:.2f}"
+        )
+        if reasons:
+            ordered = sorted(reasons.items(), key=lambda item: -item[1])
+            print("refusals " + " ".join(f"{name}={count}" for name, count in ordered))
+        print(
+            f"benchmark (hold USDT) = 0.00 -> "
+            f"{'BEATS' if net_total > 0 else 'DOES NOT BEAT'} the benchmark"
+        )
+        if totals["liquidations"]:
+            print(
+                "WARNING: a liquidation in replay is exactly what ADR-0009's ceiling gate "
+                "forbids. Investigate before trusting any sizing above."
+            )
+        print(
+            "NOTE: archive replay contributes zero to every promotion gate (ADR-0012). "
+            "Fees and slippage are assumed, not measured (limitation 8)."
+        )
+        return 0
+
+    return await _run_audited(settings, job_name="backtest", argv=sys.argv[1:], body=body)
+
+
+# ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
 
@@ -1817,6 +1933,21 @@ def build_parser() -> argparse.ArgumentParser:
     carry_status.add_argument("--json", action="store_true")
     carry_status.add_argument("--limit", type=int, default=15)
     carry_status.set_defaults(func=cmd_carry_status)
+
+    backtest = sub.add_parser(
+        "backtest", help="replay the risk engine over recorded history (never promotion evidence)"
+    )
+    backtest.add_argument("--capital", default="100000")
+    backtest.add_argument("--hold-hours", type=int, default=720)
+    backtest.add_argument("--entry-every-hours", type=int, default=720)
+    backtest.add_argument("--max-leverage", default="2")
+    backtest.add_argument("--stress-sigma", default="3")
+    backtest.add_argument("--stress-floor", default="0.15")
+    backtest.add_argument("--margin-buffer", default="0.25")
+    backtest.add_argument("--fee-bps", default="6")
+    backtest.add_argument("--slippage-bps", default="3")
+    _add_symbol_selector(backtest)
+    backtest.set_defaults(func=cmd_backtest)
 
     promotion = sub.add_parser("promotion-status", help="promotion gates and binding constraint")
     promotion.add_argument("--json", action="store_true")
